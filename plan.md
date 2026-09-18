@@ -1,5 +1,7 @@
 # cargo-tare
 
+https://github.com/listepo/cargo-tare
+
 A cargo subcommand that shrinks live `target/` directories without slowing builds: transparent
 APFS compression, copy-on-write dedupe across targets, clone-seeding of new worktrees, and opt-in
 removal of orphaned or idle targets — planned together so the approaches reinforce each other.
