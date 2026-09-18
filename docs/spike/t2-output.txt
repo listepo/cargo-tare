@@ -1,0 +1,127 @@
+
+=== preflight
+host free MB: 3990
+cargo 1.97.1 (c980f4866 2026-06-30)
+hdiutil: WARNING: 'hdiutil create -size -volname ...' is deprecated. Please use 'diskutil image create from/blank -size --volumeName ...' instead.
+hdiutil: WARNING: 'hdiutil attach -nobrowse ...' is deprecated. Please use 'diskutil image attach --mountOptions nobrowse ...' instead.
+Volume Name:               TareSpike
+File System Personality:   APFS
+
+=== fixture
+lockfile: offline
+main cold build: fresh=0 rebuilt=15 -> build-script-build itoa libc memchr proc_macro2 quote serde serde_core serde_derive serde_json syn tareapp tarecore unicode_ident zmij  seconds=4.46
+main again:      fresh=15 rebuilt=0  seconds=.11
+target KB: 51988  files: 262  hardlinked files: 46
+41152	target/debug/deps
+8096	target/debug/build
+1732	target/debug/incremental
+552	target/debug/tareapp
+392	target/debug/.fingerprint
+48	target/debug/libtarecore.rlib
+
+=== E1 seed a new worktree by recursive clone (hypothesis: registry deps fresh, members rebuild)
+cp -c -R -p: seconds=.09 image_used_delta_KB=108 (target is 51988 KB)
+wt_cold (no seed):           fresh=0 rebuilt=15 -> build-script-build itoa libc memchr proc_macro2 quote serde serde_core serde_derive serde_json syn tareapp tarecore unicode_ident zmij  seconds=2.96
+wt_seed_p (-p, mtimes kept):  fresh=13 rebuilt=2 -> tareapp tarecore  seconds=.76
+wt_seed_nop (mtimes = now):   fresh=13 rebuilt=2 -> tareapp tarecore  seconds=.73
+wt_seed_noinc (-p, no incr):  fresh=13 rebuilt=2 -> tareapp tarecore  seconds=.63
+wt_seed_p second run:         fresh=15 rebuilt=0  seconds=.17
+member artifact names, main vs wt_cold (same name = path-independent unit hash):
+  main    libmemchr-847396c199b2decf.rlib
+  main    libtarecore-303161631e4454d3.rlib
+  wt_cold libmemchr-847396c199b2decf.rlib
+  wt_cold libtarecore-303161631e4454d3.rlib
+
+=== E2 content match between independently built worktrees; clone replace with restored mtime
+wt_cold files >4k: 52 (49264 KB); byte-identical to a main file: 41 (28142 KB)
+not identical, by extension:
+  dylib 1
+  noext 2
+  rlib 5
+  rmeta 3
+image_used_delta_KB after clone-replace: -24220 (expected about -28142)
+wt_cold after dedupe:        fresh=15 rebuilt=0  seconds=.21
+
+=== E2 negative control: same replacement WITHOUT restoring mtime on libmemchr rlib
+wt_cold, rlib mtime = now:   fresh=15 rebuilt=0  seconds=.17
+
+=== E3 replace a whole hardlink group atomically
+hardlink groups: 23
+536 2 target/debug/deps/libtarecore-303161631e4454d3.rmeta
+536 2 target/debug/incremental/tarecore-3llc37aqoc4tv/s-hmehpa15uq-1237cdz-4u01ztijakpg5crqrbloe5ye0/metadata.rmeta
+537 2 target/debug/deps/tarecore-303161631e4454d3.cb5y0vjrhiz9n6peyqt161jcb.0e8h86o.rcgu.o
+537 2 target/debug/incremental/tarecore-3llc37aqoc4tv/s-hmehpa15uq-1237cdz-4u01ztijakpg5crqrbloe5ye0/cb5y0vjrhiz9n6peyqt161jcb.o
+538 2 target/debug/deps/tarecore-303161631e4454d3.9xbsv21tj4h3uanasinhf67tb.0e8h86o.rcgu.o
+538 2 target/debug/incremental/tarecore-3llc37aqoc4tv/s-hmehpa15uq-1237cdz-4u01ztijakpg5crqrbloe5ye0/9xbsv21tj4h3uanasinhf67tb.o
+group inode=536 nlink=2 paths_found=2
+after: 2775 2 target/debug/deps/libtarecore-303161631e4454d3.rmeta;2775 2 target/debug/incremental/tarecore-3llc37aqoc4tv/s-hmehpa15uq-1237cdz-4u01ztijakpg5crqrbloe5ye0/metadata.rmeta;
+content same: yes
+main after group replace:    fresh=15 rebuilt=0  seconds=.08
+
+=== E4 transparent compression via ditto (zlib): freshness, relink, clone sharing
+deps KB: 41152 -> 41152 (100.0%) files=36 seconds=.57
+compressed flag count: 0
+main after compress:         fresh=15 rebuilt=0  seconds=.17
+main after source edit:      fresh=14 rebuilt=1 -> tareapp  seconds=.48  run: true
+deps KB after rebuild: 41152; compressed flag count: 0
+
+=== E4d do clones of a compressed file share blocks?
+big.bin logical KB=121638 allocated KB=121640; big.cmp allocated KB=121640 flags=-
+5 clones of COMPRESSED file: image_used_delta_KB=0 flags=- (unshared would be ~608200)
+5 clones of plain file:      image_used_delta_KB=0
+2 plain copies (control):    image_used_delta_KB=243284
+after append to cc1: cc1 flags=- allocated KB=121640; cc2 unchanged: yes
+
+=== E5 hash throughput
+shasum -a 256: 389 MB/s (950 MB)
+openssl dgst -sha256: 1484 MB/s (950 MB)
+openssl dgst -blake2b512: 826 MB/s (950 MB)
+md5 -q: 601 MB/s (950 MB)
+b3sum: not installed
+
+=== E6 cargo build lock interop (flock on target/debug/.cargo-lock)
+-rw-r--r--@ 1 listepo  staff  0 Sep 18 11:15 target/debug/.cargo-lock
+    Blocking waiting for file lock on artifact directory
+   Compiling tareapp v0.1.0 (/Volumes/TareSpike/main/tareapp)
+cargo build while lock held elsewhere: seconds=5.33 (>=5 means cargo honours flock)
+
+=== E7 applesauce CLI on a target with hardlinks and clones
+   Installed package `applesauce-cli v0.5.28` (executable `applesauce`)
+warning: be sure to add `/Volumes/TareSpike/tools/bin` to your PATH to be able to run the installed binaries
+applesauce-cli 0.5.28
+Compress files
+
+Usage: applesauce compress [OPTIONS] <PATHS>...
+
+Arguments:
+  <PATHS>...
+          Paths to recursively compress
+
+Options:
+  -l, --level <LEVEL>
+          The compression level to use
+          
+          [default: 5]
+
+  -r, --minimum-compression-ratio <MINIMUM_COMPRESSION_RATIO>
+          The minimum compression ratio
+          
+          Files will be skipped if they compress to a larger size than this ratio of the original size
+          
+          A value of 0.0 (or less) will skip all files A value of 1.0 will only skip files which cannot be compressed at all Values greater than 1.0 are valid, and will allow forcing compression to be used even if it results in a larger file
+          
+          [default: 0.95]
+
+  -c, --compression <COMPRESSION>
+          The type of compression to use
+before: KB=54188 hardlinked=46 mtime+mode sig=bde48a202c14
+Starting Size (total filesize): 51.95 MiB (54474176)
+Starting Size (on disk):        52.29 MiB (54829056)
+Final Size (on disk):           18.17 MiB (19050496)
+Savings:                        65.3%
+after:  KB=19248 hardlinked=46 mtime+mode sig=bde48a202c14 seconds=.68 image_used_delta_KB=16284
+compressed flag count in deps: 72 of 95
+wt_seed_p after applesauce:  fresh=15 rebuilt=0  seconds=1.58
+second run seconds=.16
+
+=== done. image: /private/tmp/claude-501/-Users-listepo-GitHub-listepo-research/8ae1573c-29c3-45b5-bfea-7dea4f74e1b4/scratchpad/tare-spike.sparseimage (1492948 KB on host). Detach: hdiutil detach /Volumes/TareSpike

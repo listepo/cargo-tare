@@ -1,0 +1,98 @@
+# cargo-tare
+
+Tare: the weight of the packaging, not the goods. `cargo-tare` takes the dead weight out of Cargo
+`target/` directories — without deleting what you still build with and without slowing builds.
+
+Status: early. `status`, compress, dedupe and the opt-in `orphans` / `evict` work; the other
+passes are in `plan.md`.
+
+## Why
+
+On the machine this was designed for: 44 target dirs, ~158 GB. 114 GB of that sat in 30 worktree
+checkouts git no longer knew about; nothing flags those. Inside the live targets, age-based
+cleaners find ~50 MB of 14 GB, and `cargo-cache` only cleans `~/.cargo`. The live bytes are
+duplicated and highly compressible:
+
+- `deps/` compresses to ~20–30% of its size (object files to ~5%);
+- 36% of bytes across sibling targets are identical content;
+- a new worktree rebuilds every third-party crate from scratch.
+
+Measured on a real 587-crate workspace (`docs/bench.md`): two freshly built targets go from
+3.63 GiB to about 0.93 GiB of blocks on disk — 74% — and cargo afterwards reports not one unit
+out of date. Incremental builds stay where they were, within the noise.
+
+## How
+
+One planner, several approaches that reinforce each other (details in `DESIGN.md`):
+
+- **compress** — transparent APFS compression of stable artifacts;
+- **dedupe** — identical files across and inside targets become copy-on-write clones;
+- **seed** — a new worktree's target starts as a zero-byte clone of a sibling's, so third-party
+  crates are not rebuilt;
+- **orphans / evict** — opt-in removal of targets whose worktree is gone, idle targets, and
+  least-recently-built targets above a global size cap.
+
+Everything runs under cargo's own build lock, preserves mtimes so nothing is rebuilt, and treats
+hardlink groups as one unit.
+
+## Usage
+
+Works today:
+
+```
+cargo tare status ~/code            # read-only: every target under the root
+cargo tare status --json ~/code
+cargo tare run --dry-run ~/code     # plan only
+cargo tare run ~/code
+cargo tare run [--dry-run] [--pass <PASS>]... [--lossy <PASS>]... [--index <FILE>] <ROOT>...
+              [--min-age <SECS>] [--min-size <BYTES>]
+cargo tare run --dry-run --lossy orphans ~/code
+cargo tare run --dry-run --lossy evict --evict-idle-days 30 ~/code
+cargo tare run --lossy evict --evict-max-total-gib 50 ~/code
+```
+
+`status` lists cargo target dirs grouped by family (a repository and its worktrees): size on disk
+as `du` counts it, days since the last build, `ORPHANED` for a worktree git no longer knows, and
+totals — bytes not compressed yet and an upper bound of what dedupe could share.
+
+`run` applies two lossless passes. **compress**: files of 8 KB and more get transparent APFS
+compression (LZFSE); hardlink groups stay groups. **dedupe**: files with equal content become
+copy-on-write clones of one copy, compressed if that copy is. Targets are compared inside a
+family, which is where most duplicates are. What the compression backend refused, and why, is
+printed at the end. A `<ROOT>` is searched for targets; a target dir itself works too.
+
+It takes cargo's own lock, skips profile dirs with a running build, leaves alone files younger
+than one hour or too small to win a block (8 KB for compress, 4 KB for dedupe), works on private
+copies and swaps them in with `rename`, keeps mtimes so nothing is rebuilt, and remembers content
+hashes in `~/.cache/cargo-tare/hashes-v1.bin` so the next run reads only new files.
+Only dirs carrying cargo's own `CACHEDIR.TAG` count as targets. `--lossy` enables a
+pass that deletes rebuildable data; lossless passes need no flag. How the engine keeps a target
+safe is described in `DESIGN.md`, "Engine" and "Safety invariants".
+
+`--pass <PASS>` runs only the passes you name (`orphans`, `compress`, `dedupe`, `evict`), which
+is how the benchmarks tell them apart. `--min-age` and `--min-size` move the two floors below;
+they exist for measurements, and the defaults are what `docs/bench.md` justifies.
+
+**orphans** deletes, so it is off unless you name it: `--lossy orphans` removes the whole
+`target/` of a checkout that is a git worktree the repository no longer registers (its `.git`
+file points at a missing worktree record). Nothing outside `target/` is touched — such a
+checkout can hold work git can no longer report. No threshold, and every removal is printed
+with its reason on a dry run too.
+
+**evict** deletes, so it is off unless you name it: `--lossy evict` plus `--evict-idle-days <N>`
+(profile dirs such as `target/debug` with no build for N days), `--evict-max-total-gib <N>`
+(then the least recently built, until everything under the roots fits), or both. Only whole
+profile dirs go, only under cargo's lock, never one with a running build or one built since the
+run started looking. Every removal is printed with its reason; `--dry-run` prints the same list
+and removes nothing. Cargo rebuilds what was removed on the next build of that profile.
+
+Planned:
+
+```
+cargo tare run             # without arguments: every target under the configured roots
+cargo tare seed            # in a fresh worktree: clone a sibling's target
+cargo tare advise          # config findings
+```
+
+macOS / APFS only for 0.x. Version-gated features (unit-level pruning, shared build-dir
+automation, symlink mode for non-reflink filesystems) are in `roadmap.md`.

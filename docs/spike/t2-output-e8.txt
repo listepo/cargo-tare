@@ -1,0 +1,43 @@
+ -c, --compression <COMPRESSION>
+ The type of compression to use
+ 
+ [default: lzfse]
+ [possible values: lzfse, zlib, lzvn]
+
+ --chrome-tracing <CHROME_TRACING>
+
+=== E8a compression kinds on a 119 MB blob of rlibs
+lzfse: allocated KB 121640 -> 121640 (100.0%) flags=- compress_seconds=.13
+   read back seconds=.17
+zlib: allocated KB 121640 -> 121640 (100.0%) flags=- compress_seconds=.13
+   read back seconds=.09
+lzvn: allocated KB 121640 -> 121640 (100.0%) flags=- compress_seconds=.12
+   read back seconds=.09
+plain read seconds=.08
+
+=== E8b do clones of a COMPRESSED file share blocks and stay compressed?
+5 clones: image_used_delta_KB=4 (unshared would be ~608200) clone flags=- content ok: yes
+after append to ca1: flags=- allocated KB=121640; ca2 intact: yes ca2 flags=-
+
+=== E8c compress first, then seed: is the seeded target shared AND compressed AND fresh?
+Final Size (on disk):           17.54 MiB (18391040)
+Savings:                        65.6%
+compress main/target: image_used_delta_KB=15552; main: fresh=15 rebuilt=0  seconds=.79
+seed from compressed target: image_used_delta_KB=180; compressed files in deps: 50 of 111
+wt_seed2: fresh=13 rebuilt=2 -> tareapp tarecore  seconds=2.46
+compressed files in wt_seed2 deps after its build: 46
+
+=== E8d fused step: wt_seed_p was compressed separately (unshared). Re-clone identical content from compressed main.
+pairs=48 image_used_delta_KB=-14516 (expected about -16052); still compressed: 72
+wt_seed_p after re-clone: fresh=15 rebuilt=0  seconds=.24
+
+=== E8e relink against compressed rlibs and run
+main after source edit: fresh=14 rebuilt=1 -> tareapp  seconds=.35  run: true
+members rewritten by the build lose compression (expected): compressed in deps = 48
+
+=== E8f negative control on a MEMBER rlib: clone-replace without restoring mtime
+wt_cold, member rlib mtime = now: fresh=14 rebuilt=1 -> tareapp  seconds=.47
+
+=== cleanup
+image detached and deleted
+host free MB: 4448

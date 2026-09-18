@@ -1,0 +1,213 @@
+//! The dedupe pass: equal content in different inodes becomes copy-on-write clones of one.
+
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::{self, Read};
+use std::path::Path;
+use std::time::{Duration, SystemTime};
+
+use rayon::prelude::*;
+use sha2::{Digest, Sha256};
+
+use crate::engine::{Action, Pass, Replace, UF_COMPRESSED};
+use crate::index::{Hash, HashIndex};
+use crate::model::{Inode, Profile, Stamp};
+
+/// One APFS block. A smaller file occupies one block either way; nothing to gain.
+pub const NAME: &str = "dedupe";
+pub const DEFAULT_MIN_SIZE: u64 = 4096;
+/// Younger files are likely to be rewritten by the next build, which un-shares them again.
+pub const DEFAULT_MIN_AGE: Duration = Duration::from_secs(60 * 60);
+const HASH_BUFFER_BYTES: usize = 1 << 20;
+
+pub struct Dedupe<'a> {
+    pub min_size: u64,
+    pub min_age: Duration,
+    index: &'a RefCell<HashIndex>,
+    hashed: Cell<usize>,
+}
+
+impl<'a> Dedupe<'a> {
+    /// The index is the caller's: the compress pass reads it too, and the caller saves it.
+    pub fn new(index: &'a RefCell<HashIndex>) -> Self {
+        Self {
+            min_size: DEFAULT_MIN_SIZE,
+            min_age: DEFAULT_MIN_AGE,
+            index,
+            hashed: Cell::new(0),
+        }
+    }
+
+    /// Files read and hashed so far; everything else came from the index or was never needed.
+    pub fn hashed(&self) -> usize {
+        self.hashed.get()
+    }
+
+    /// Also the rule for a source: it must not be rewritten under our feet either.
+    fn eligible(&self, inode: &Inode, now: SystemTime) -> bool {
+        inode.stamp.size >= self.min_size
+            && inode.nlink == inode.paths.len() as u64
+            && inode.flags & !UF_COMPRESSED == 0
+            && now
+                .duration_since(inode.stamp.mtime)
+                .is_ok_and(|age| age >= self.min_age)
+    }
+}
+
+impl Pass for Dedupe<'_> {
+    fn name(&self) -> &'static str {
+        NAME
+    }
+
+    fn plan(&self, profiles: &[Profile]) -> Vec<Action> {
+        let now = SystemTime::now();
+        // A file whose size is unique on its device has no twin: never read it.
+        let mut by_size: HashMap<(u64, u64), Vec<&Inode>> = HashMap::new();
+        for inode in profiles.iter().flat_map(|p| &p.inodes) {
+            if self.eligible(inode, now) {
+                let key = (inode.stamp.dev, inode.stamp.size);
+                by_size.entry(key).or_default().push(inode);
+            }
+        }
+        let candidates: Vec<&Inode> = by_size
+            .into_values()
+            .filter(|bucket| bucket.len() > 1)
+            .flatten()
+            .collect();
+
+        let mut index = self.index.borrow_mut();
+        let unknown: Vec<&Inode> = candidates
+            .iter()
+            .copied()
+            .filter(|inode| index.get(&inode.stamp).is_none())
+            .collect();
+        let computed: Vec<(&Inode, io::Result<Hash>)> = unknown
+            .par_iter()
+            .map(|inode| (*inode, hash_file(&inode.paths[0])))
+            .collect();
+        self.hashed.set(self.hashed.get() + computed.len());
+        for (inode, hash) in computed {
+            // An unreadable file simply stays out of every group.
+            if let Ok(hash) = hash {
+                index.put(&inode.stamp, hash, false);
+            }
+        }
+
+        let mut by_content: HashMap<(u64, Hash), Vec<(&Inode, bool)>> = HashMap::new();
+        for inode in candidates {
+            if let Some(entry) = index.get(&inode.stamp) {
+                let key = (inode.stamp.dev, entry.hash);
+                by_content
+                    .entry(key)
+                    .or_default()
+                    .push((inode, entry.shared));
+            }
+        }
+
+        let mut actions = Vec::new();
+        for mut group in by_content.into_values() {
+            group.sort_by(|a, b| canonical_order(a).cmp(&canonical_order(b)));
+            let (canonical, _) = group[0];
+            // Inodes already marked shared are clones from an earlier run: leave them.
+            // ponytail: two shared clusters with the same content are never merged.
+            for (member, shared) in &group[1..] {
+                if !shared {
+                    actions.push(Replace {
+                        source: canonical.paths[0].clone(),
+                        source_stamp: canonical.stamp.clone(),
+                        member: (*member).clone(),
+                    });
+                }
+            }
+        }
+        actions.sort_by(|a, b| a.member.paths.cmp(&b.member.paths));
+        actions.into_iter().map(Action::Replace).collect()
+    }
+
+    fn replaced(&self, replace: &Replace, new: &Stamp) {
+        let mut index = self.index.borrow_mut();
+        if let Some(hash) = index.get(&replace.source_stamp).map(|entry| entry.hash) {
+            index.mark_shared(&replace.source_stamp);
+            index.remove(&replace.member.stamp);
+            index.put(new, hash, true);
+        }
+    }
+
+    fn rewritten(&self, old: &Stamp, new: &Stamp) {
+        let mut index = self.index.borrow_mut();
+        if let Some(hash) = index.get(old).map(|entry| entry.hash) {
+            index.remove(old);
+            index.put(new, hash, false);
+        }
+    }
+}
+
+/// Smallest first: an already shared inode, then a compressed one (its clones stay compressed,
+/// which is how dedupe and compress add up instead of fighting), then the oldest.
+fn canonical_order<'a>(entry: &(&'a Inode, bool)) -> (bool, bool, SystemTime, &'a Path) {
+    let (inode, shared) = *entry;
+    let compressed = inode.flags & UF_COMPRESSED != 0;
+    (
+        !shared,
+        !compressed,
+        inode.stamp.mtime,
+        inode.paths[0].as_path(),
+    )
+}
+
+fn hash_file(path: &Path) -> io::Result<Hash> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0; HASH_BUFFER_BYTES];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(hasher.finalize().into());
+        }
+        hasher.update(&buffer[..read]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn inode(name: &str, flags: u32, mtime_secs: u64) -> Inode {
+        Inode {
+            stamp: Stamp {
+                dev: 1,
+                ino: mtime_secs,
+                size: DEFAULT_MIN_SIZE,
+                mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(mtime_secs),
+            },
+            mode: 0o644,
+            flags,
+            nlink: 1,
+            allocated: DEFAULT_MIN_SIZE,
+            paths: vec![PathBuf::from(name)],
+        }
+    }
+
+    #[test]
+    fn canonical_is_shared_then_compressed_then_oldest() {
+        let (old, new) = (inode("old", 0, 1), inode("new", 0, 2));
+        let compressed = inode("compressed", UF_COMPRESSED, 3);
+        let shared = inode("shared", 0, 4);
+        let mut group = [
+            (&new, false),
+            (&compressed, false),
+            (&shared, true),
+            (&old, false),
+        ];
+
+        group.sort_by(|a, b| canonical_order(a).cmp(&canonical_order(b)));
+
+        let names: Vec<_> = group
+            .iter()
+            .map(|(i, _)| i.paths[0].to_str().unwrap())
+            .collect();
+        assert_eq!(names, ["shared", "compressed", "old", "new"]);
+    }
+}
