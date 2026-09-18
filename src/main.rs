@@ -98,6 +98,10 @@ struct RunArgs {
     /// under the roots fit into this many GiB
     #[arg(long, value_name = "GIB")]
     evict_max_total_gib: Option<u64>,
+    /// With `--lossy evict`: once every profile dir of a target is evicted, remove the target dir
+    /// itself, so `doc/`, `package/` and `tmp/` go with it
+    #[arg(long)]
+    evict_whole_target: bool,
     /// With `--lossy incremental`: drop the incremental cache of profile dirs not built for
     /// this many days
     #[arg(long, value_name = "DAYS")]
@@ -363,7 +367,11 @@ fn run(args: RunArgs) -> Result<Done> {
         .iter()
         .flat_map(|target| target.profiles.iter().cloned())
         .collect();
-    let evict = Evict::new(evict::select(&profiles, now_unix(), limits));
+    let chosen = evict::select(&profiles, now_unix(), limits);
+    let mut evict = Evict::new(chosen.clone());
+    if args.evict_whole_target || config.evict.whole_target {
+        evict = evict.whole(evict::whole_targets(&inventory.targets, &chosen));
+    }
     // Cargo keeps `incremental/` for workspace members only, so this costs one plain rebuild.
     let idle_days = incremental_idle_days.unwrap_or(u64::MAX);
     let incremental = Incremental::new(incremental::select(&profiles, now_unix(), idle_days));

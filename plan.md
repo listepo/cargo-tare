@@ -11,11 +11,9 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | T14 | todo | P1 | 3 | 0% | |
 | T15 | todo | P2 | 3 | 0% | |
 | T16 | todo | P2 | 1 | 0% | |
-| T17 | todo | P2 | 2 | 0% | |
 | T18 | todo | P3 | 3 | 0% | |
 
-Blockers: none. `Action::RemoveTarget` and its lock guard (added by T9.1) are what T17 reuses.
-Everything is free to start: the engine (`src/engine.rs`), the inode model (`src/model.rs`), the
+Blockers: none. Everything is free to start: the engine (`src/engine.rs`), the inode model (`src/model.rs`), the
 inventory with families (`src/inventory.rs`), the hash index (`src/index.rs`) and the test
 harness with the freshness oracle (`tests/common/mod.rs`) exist.
 T13–T18 were added from the competitor review in `docs/research.md`; each card says which tool
@@ -82,16 +80,6 @@ the whole target. A one-directory pass: `--lossy doc`, remove `<target>/doc` who
 with its size like every other removal. Smallest task in the list and pure profit for anyone who
 ever ran `cargo doc` once. Done: a test builds docs in the fixture, the pass removes them, the
 build oracle stays green (docs are not part of the build graph).
-
-### T17. Whole-target eviction
-
-`evict` today selects profile dirs. `cargo-clean-all` and `kondo` work at target granularity, so
-they also take `doc/`, `package/`, `tmp/` and `CACHEDIR.TAG` — everything a target holds outside
-its profile dirs. Add `--evict-whole-target`: when every profile dir of a target is selected,
-remove the target dir itself rather than its profiles one by one. Needs the "remove a dir that
-contains only locked profile dirs" guard that T9.1 introduces for orphans, so it is that task's
-machinery applied to a second selector. Done: a test where a target with two profiles and a
-`doc/` dir leaves nothing behind, and one where a busy profile keeps the whole target.
 
 ### T18. Dedupe across families
 

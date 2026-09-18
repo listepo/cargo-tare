@@ -342,6 +342,14 @@ Lossy, so it runs only with `--lossy evict`, and only together with at least one
   a locked profile dir or inside one; then the whole dir goes, lock file included,
   which is what `cargo clean --profile` does. The dir leaves the set that later passes scan.
   `CACHEDIR.TAG` and the other profiles of the target stay.
+- **Whole targets, with `--evict-whole-target`.** `evict::whole_targets(targets, chosen)` returns
+  the targets whose every profile dir the selection took; the pass then plans one
+  `Action::RemoveTarget` for such a target instead of the per-profile `Remove` actions inside it,
+  so `doc/`, `package/`, `tmp/` and `CACHEDIR.TAG` go with them — what `cargo-clean-all` and
+  `kondo` do, and what evicting profile by profile leaves behind. Each `Whole` carries its
+  profiles, so the re-check under the lock covers all of them: one profile busy or built since
+  the inventory keeps the target dir, and the free profiles are still evicted one by one. Only
+  `target/` goes; the project around it is never touched.
 - **Always reported.** Every planned removal and its reason land in `PassReport::removals`, on a
   dry run too; the CLI prints them as `would remove` / `remove`.
 - `evict` runs after `orphans` and before the lossless passes: no point compressing what is
@@ -409,6 +417,7 @@ cargo tare status [--json] [ROOT]...  # inventory, families, potential savings; 
 cargo tare run [--dry-run] [--lossy <PASS>]... [--index <FILE>] [<ROOT>]...
                [--config <FILE>] [--json]          # file: see below; json: the report as data
                [--evict-idle-days <N>] [--evict-max-total-gib <N>]   # with --lossy evict
+               [--evict-whole-target]                                # with --lossy evict
                [--incremental-idle-days <N>]        # with --lossy incremental
                                                     # --lossy orphans: no threshold
                [--pass <PASS>]... [--min-age <SECS>] [--min-size <BYTES>]  # benchmarks
@@ -418,7 +427,7 @@ cargo tare advise                     # config findings: ignored [unstable] keys
 
 Config (`src/config.rs`): `$XDG_CONFIG_HOME/cargo-tare/config.toml`, else
 `~/.config/cargo-tare/config.toml` — `roots`, `lossy`, `min-age`, `min-size`,
-`[evict] idle-days / max-total-gib`, `[incremental] idle-days`, `[family."<dir>"] skip`. Keys are
+`[evict] idle-days / max-total-gib / whole-target`, `[incremental] idle-days`, `[family."<dir>"] skip`. Keys are
 kebab-case and unknown ones are an error: a typo that silently does nothing is worse than a stop.
 A flag always wins over the file, and a file named with `--config` must exist. Only `skip` is per
 family, because the other thresholds are decided over everything under the roots at once.

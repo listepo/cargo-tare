@@ -221,9 +221,15 @@ pub fn run_unbusy(mut engine_run: impl FnMut() -> Report) -> Report {
 /// inside `deps/` stays as young as the call, which is what the pass age floors read.
 pub fn fake_target(root: &Path, name: &str, kib: usize, days: u64) -> PathBuf {
     let target = root.join(name).join("target");
-    let profile = target.join("debug");
-    fs::create_dir_all(profile.join("deps")).unwrap();
+    fs::create_dir_all(&target).unwrap();
     fs::write(target.join("CACHEDIR.TAG"), CARGO_TAG).unwrap();
+    fake_profile(&target, "debug", kib, days)
+}
+
+/// One more profile dir inside a target `fake_target` already tagged.
+pub fn fake_profile(target: &Path, name: &str, kib: usize, days: u64) -> PathBuf {
+    let profile = target.join(name);
+    fs::create_dir_all(profile.join("deps")).unwrap();
     File::create(profile.join(CARGO_LOCK_FILE)).unwrap();
     fs::write(profile.join("deps/libx.rlib"), vec![1; kib * KIB]).unwrap();
     let built = SystemTime::now() - Duration::from_secs(days * SECS_PER_DAY);

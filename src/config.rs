@@ -41,6 +41,9 @@ pub struct Config {
 pub struct Evict {
     pub idle_days: Option<u64>,
     pub max_total_gib: Option<u64>,
+    /// Take a target dir whole once every profile dir of it is evicted.
+    #[serde(default)]
+    pub whole_target: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]

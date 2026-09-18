@@ -106,6 +106,12 @@ profile dirs go, only under cargo's lock, never one with a running build or one 
 run started looking. Every removal is printed with its reason; `--dry-run` prints the same list
 and removes nothing. Cargo rebuilds what was removed on the next build of that profile.
 
+Add `--evict-whole-target` and a target whose every profile dir is being evicted goes whole, so
+`doc/`, `package/`, `tmp/` and `CACHEDIR.TAG` leave with it instead of surviving as an empty
+shell. One profile with a build running, or one built since the run started looking, keeps the
+target dir and the free profiles are evicted on their own. Only `target/` is ever removed; the
+sources next to it are not.
+
 `--json` prints the same report as one JSON document instead of the table. Exit codes: `0`
 everything the run planned was done, `1` the run failed (bad flags, bad config, I/O), `2` a
 profile dir was skipped because a build held its lock — what a scheduled run needs to tell
@@ -126,6 +132,7 @@ min-size = 8192             # bytes; both lossless passes
 [evict]
 idle-days = 30
 max-total-gib = 50
+whole-target = true         # take the target dir itself once all of its profiles are evicted
 
 [incremental]
 idle-days = 7

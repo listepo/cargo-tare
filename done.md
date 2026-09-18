@@ -1,5 +1,29 @@
 # Done
 
+### T17. Whole-target eviction
+
+`evict` today selects profile dirs. `cargo-clean-all` and `kondo` work at target granularity, so
+they also take `doc/`, `package/`, `tmp/` and `CACHEDIR.TAG` — everything a target holds outside
+its profile dirs. Add `--evict-whole-target`: when every profile dir of a target is selected,
+remove the target dir itself rather than its profiles one by one. Needs the "remove a dir that
+contains only locked profile dirs" guard that T9.1 introduces for orphans, so it is that task's
+machinery applied to a second selector. Done: a test where a target with two profiles and a
+`doc/` dir leaves nothing behind, and one where a busy profile keeps the whole target.
+
+Outcome: `evict::whole_targets(targets, chosen)` (pure) returns every target whose profile dirs
+the selection took whole, each carrying its profiles and its `du` bytes; `Evict::whole(...)` turns
+the upgrade on, and `plan` emits one `Action::RemoveTarget` for such a target and drops the
+per-profile `Remove` actions inside it. The re-check under the lock covers every profile of the
+target, so a busy or freshly built profile keeps the target dir while the free profiles are still
+evicted one by one. Wired as `--evict-whole-target` and `[evict] whole-target`.
+
+Tests: `a_target_goes_whole_only_when_every_profile_of_it_is_chosen` (unit, over a partly idle
+target and one with no profiles at all) and `tests/evict_whole.rs` — the A/B
+`ab_only_the_whole_target_run_takes_what_is_outside_the_profiles` (same tree twice, the flag the
+only difference: without it `doc/` and `CACHEDIR.TAG` survive, with it the target dir is gone and
+the project around it stays), the busy-profile fallback, a fresh third profile keeping its target,
+and the config-file route. Docs: DESIGN.md "Evict pass" and the CLI/config surface, README.
+
 ### T8. `seed`: clone-seed a new worktree's target
 
 `cargo tare seed [--from <dir>] [<dir>]` with automatic source choice inside the family; excludes

@@ -28,7 +28,7 @@ pub struct ProfileInfo {
     pub last_built_unix: Option<u64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize)]
 pub struct Target {
     pub root: PathBuf,
     pub profiles: Vec<ProfileInfo>,

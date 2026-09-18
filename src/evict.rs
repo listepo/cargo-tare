@@ -3,10 +3,10 @@
 //! cargo rebuilds; nothing else is ever touched.
 
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::engine::{Action, Pass};
-use crate::inventory::{self, ProfileInfo};
+use crate::inventory::{self, ProfileInfo, Target};
 use crate::model::Profile;
 
 pub const NAME: &str = "evict";
@@ -85,14 +85,64 @@ pub fn select(
     chosen
 }
 
+/// A target [`select`] chose every profile dir of. Taking it whole also takes what a target holds
+/// outside its profiles — `doc/`, `package/`, `tmp/`, `CACHEDIR.TAG` — which is what
+/// `cargo-clean-all` and `kondo` do and what evicting profile by profile leaves behind.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Whole {
+    pub target: PathBuf,
+    /// What `du` reports for the whole target dir, for the report.
+    pub bytes: u64,
+    /// Every profile of the target, to re-check under the lock that none was built since.
+    pub profiles: Vec<ProfileInfo>,
+    pub reason: String,
+}
+
+/// The targets of `targets` whose every profile dir is in `chosen`. Pure, and decided over the
+/// same inventory `select` saw. A target without profile dirs has nothing to evict.
+pub fn whole_targets(targets: &[Target], chosen: &[(ProfileInfo, Reason)]) -> Vec<Whole> {
+    let reason_for = |dir: &Path| {
+        chosen
+            .iter()
+            .find(|(info, _)| info.dir == dir)
+            .map(|(_, reason)| reason)
+    };
+    targets
+        .iter()
+        .filter_map(|target| {
+            let first = reason_for(&target.profiles.first()?.dir)?;
+            let every = target
+                .profiles
+                .iter()
+                .all(|profile| reason_for(&profile.dir).is_some());
+            every.then(|| Whole {
+                target: target.root.clone(),
+                bytes: target.allocated_bytes,
+                profiles: target.profiles.clone(),
+                reason: format!("{first}, and every profile dir of the target with it"),
+            })
+        })
+        .collect()
+}
+
 pub struct Evict {
     chosen: Vec<(ProfileInfo, Reason)>,
+    whole: Vec<Whole>,
 }
 
 impl Evict {
     /// `chosen` comes from [`select`] over an inventory taken before any lock was held.
     pub fn new(chosen: Vec<(ProfileInfo, Reason)>) -> Self {
-        Self { chosen }
+        Self {
+            chosen,
+            whole: Vec::new(),
+        }
+    }
+
+    /// With `--evict-whole-target`: [`whole_targets`] of the same selection.
+    pub fn whole(mut self, whole: Vec<Whole>) -> Self {
+        self.whole = whole;
+        self
     }
 }
 
@@ -107,16 +157,34 @@ impl Pass for Evict {
 
     fn plan(&self, profiles: &[Profile]) -> Vec<Action> {
         let locked = |dir: &PathBuf| profiles.iter().any(|profile| profile.dir == *dir);
-        self.chosen
-            .iter()
-            .filter(|(info, _)| locked(&info.dir))
-            // Now that the lock is ours: a build that ran after the inventory keeps its profile.
-            .filter(|(info, _)| inventory::last_built(&info.dir) == info.last_built_unix)
-            .map(|(info, reason)| Action::Remove {
-                dir: info.dir.clone(),
-                reason: reason.to_string(),
-            })
-            .collect()
+        // Now that the lock is ours: a build that ran after the inventory keeps its profile.
+        let evictable = |info: &ProfileInfo| {
+            locked(&info.dir) && inventory::last_built(&info.dir) == info.last_built_unix
+        };
+        let mut actions = Vec::new();
+        let mut taken: Vec<&Path> = Vec::new();
+        for whole in &self.whole {
+            if whole.profiles.iter().all(evictable) {
+                actions.push(Action::RemoveTarget {
+                    dir: whole.target.clone(),
+                    reason: whole.reason.clone(),
+                    bytes: whole.bytes,
+                });
+                taken.push(&whole.target);
+            }
+        }
+        for (info, reason) in &self.chosen {
+            // A target going whole covers its own profiles; one with a busy profile does not go
+            // whole, and its free profiles are still evicted one by one.
+            let inside = taken.iter().any(|target| info.dir.starts_with(target));
+            if !inside && evictable(info) {
+                actions.push(Action::Remove {
+                    dir: info.dir.clone(),
+                    reason: reason.to_string(),
+                });
+            }
+        }
+        actions
     }
 }
 
@@ -187,6 +255,46 @@ mod tests {
         };
 
         assert_eq!(names(&select(&profiles, NOW, limits)), ["old"]);
+    }
+
+    fn target(root: &str, profiles: Vec<ProfileInfo>) -> Target {
+        Target {
+            root: PathBuf::from(root),
+            allocated_bytes: profiles.iter().map(|p| p.allocated_bytes).sum(),
+            profiles,
+            ..Target::default()
+        }
+    }
+
+    #[test]
+    fn a_target_goes_whole_only_when_every_profile_of_it_is_chosen() {
+        let (debug, release) = (profile("a/debug", 1, 40), profile("a/release", 2, 50));
+        let half = profile("b/debug", 1, 40);
+        let targets = [
+            target("a", vec![debug.clone(), release]),
+            target("b", vec![half, profile("b/release", 1, 0)]),
+            target("empty", Vec::new()),
+        ];
+        let limits = Limits {
+            idle_days: Some(30),
+            max_total_bytes: None,
+        };
+
+        let chosen = select(
+            &targets
+                .iter()
+                .flat_map(|t| t.profiles.clone())
+                .collect::<Vec<_>>(),
+            NOW,
+            limits,
+        );
+        let whole = whole_targets(&targets, &chosen);
+
+        assert_eq!(whole.len(), 1, "{whole:?}");
+        assert_eq!(whole[0].target, PathBuf::from("a"));
+        assert_eq!(whole[0].bytes, 3 * GIB);
+        assert_eq!(whole[0].profiles[0], debug);
+        assert!(whole[0].reason.starts_with("idle for 40 days"), "{whole:?}");
     }
 
     #[test]
