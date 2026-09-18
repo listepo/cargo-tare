@@ -26,6 +26,10 @@ pub struct Seeded {
     pub source: PathBuf,
     pub files: usize,
     pub symlinks: usize,
+    /// Whether the copies share their blocks with the source. False on a filesystem without
+    /// copy-on-write, where seeding still saves the build and no longer saves the disk — worth
+    /// saying, because `bytes` then means bytes actually spent.
+    pub shared_blocks: bool,
     /// Allocated bytes of what was copied, as `du` reports it. Where the copies are clones
     /// they share these blocks with the source and the volume loses nothing; this is what the
     /// new target will appear to weigh either way.
@@ -93,6 +97,9 @@ pub fn seed(
     let mut locks = Vec::new();
     let mut seeded = Seeded {
         source: source.to_path_buf(),
+        // The destination decides: a clone cannot cross a device, and it is the new target that
+        // has to be written.
+        shared_blocks: crate::sys::caps(checkout).clone,
         ..Seeded::default()
     };
     for dir in model::profile_dirs(source)? {
@@ -135,9 +142,16 @@ pub fn seed(
             seeded.bytes += sys::allocated(&metadata);
             if !dry_run {
                 // A clone where the filesystem has them: the copy shares the blocks until
-                // one side is written.
-                sys::clone_file(entry.path(), &to)?;
-                register(index, entry.path(), &metadata, &to);
+                // one side is written. Where it does not, a real copy — the point of seeding is
+                // the build it saves, and that holds either way.
+                if seeded.shared_blocks {
+                    sys::clone_file(entry.path(), &to)?;
+                } else {
+                    fs::copy(entry.path(), &to)?;
+                }
+                if seeded.shared_blocks {
+                    register(index, entry.path(), &metadata, &to);
+                }
             }
         }
     }

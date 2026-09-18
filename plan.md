@@ -7,7 +7,6 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
-| T20 | todo | P1 | 4 | 0% | |
 | T21 | todo | P2 | 5 | 0% | |
 | T22 | todo | P2 | 3 | 0% | |
 
@@ -16,19 +15,6 @@ Blockers: none. Everything is free to start: the engine (`src/engine.rs`), the i
 (`src/index.rs`) and the test harness with the freshness oracle (`tests/common/mod.rs`) exist.
 T13–T18 were added from the competitor review in `docs/research.md`; each card says which tool
 does the same thing today.
-
-### T20. Linux: reflink dedupe and filesystem compression
-
-With T19 in place, fill in the Linux half. Dedupe: `FICLONE` (btrfs, XFS with reflink=1, bcachefs)
-is the exact equivalent of `clonefile`; `FIDEDUPERANGE` is the safer variant that verifies the
-bytes in the kernel and works even when the target is shared already. `rustix` is already a
-dependency and covers both, so no new crate should be needed. Compression: btrfs takes
-`chattr +c` (`FS_COMPR_FL`) per file, and only new writes are compressed, so a file has to be
-rewritten to shrink — which is what the pass does anyway. ext4 has neither, so both passes must
-report "not supported here" rather than pretend.
-
-Done: the pass suite runs on a btrfs loopback image in CI, `ext4` falls back to T22 instead of
-failing, and `docs/bench.md` gains a Linux row.
 
 ### T21. Windows: NTFS compression and ReFS block cloning
 

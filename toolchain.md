@@ -11,15 +11,17 @@ too slow, see `DESIGN.md`).
 | rustc | mise (pin in `rust-toolchain.toml`, mirrored in `mise.toml`) | Build | https://github.com/rust-lang/rust |
 | cargo | mise (with rust) | Build, and the tool under study | https://github.com/rust-lang/cargo |
 | just | global (cargo install / brew) | `just check`: fmt, clippy, test | https://github.com/casey/just |
-| rust-std for `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc` | `rustup target add <triple>` | `just check-cross`: the other two platforms must compile | https://github.com/rust-lang/rust |
+| rust-std for `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc` | `rustup target add --toolchain $(rustc --version --verbose \| sed -n 's/^release: //p') <triple>` — without `--toolchain` rustup installs into the *default* toolchain, not the one `rust-toolchain.toml` pins, and the cross build then fails with `E0463: can't find crate for core` | `just check-cross`: the other two platforms must compile | https://github.com/rust-lang/rust |
 | hyperfine | global (brew; mise ships an x86_64 build that will not run on arm64) | `scripts/bench.sh`: build timings | https://github.com/sharkdp/hyperfine |
 | sccache | global (mise) | `scripts/bench.sh`: the variant the tool is compared against | https://github.com/mozilla/sccache |
+| lima | global (brew / mise) | A Linux VM with a btrfs loopback image: the only way to test the Linux half from a Mac | https://github.com/lima-vm/lima |
 
 ## cargo
 
 | Package | Where | Source | Why here |
 | --- | --- | --- | --- |
 | clap | local | https://github.com/clap-rs/clap | CLI parsing, `cargo tare` subcommand wrapper |
+| rustix | local, Linux only (`[target.'cfg(target_os = "linux")'.dependencies]`) | https://github.com/bytecodealliance/rustix | `FICLONE` and `FS_IOC_GET/SETFLAGS` without hand-written `unsafe` |
 | walkdir | local | https://github.com/BurntSushi/walkdir | Walk a profile dir without following symlinks or leaving the device |
 | anyhow | local | https://github.com/dtolnay/anyhow | Error context in the binary |
 | sha2 | local | https://github.com/RustCrypto/hashes | Content hash for dedupe |

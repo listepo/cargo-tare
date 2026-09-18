@@ -154,6 +154,7 @@ dependencies = [
  "clap",
  "predicates",
  "rayon",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

@@ -72,6 +72,9 @@ fn nowhere(root: &Path) -> HashIndex {
 /// What a seeded worktree actually starts with: measured, not assumed.
 #[test]
 fn a_seeded_worktree_reuses_what_it_can() {
+    if !common::filesystem_can(|caps| caps.clone, "share blocks") {
+        return;
+    }
     let family = Family::new();
     let mut index = nowhere(&family.worktree_ws);
 
@@ -146,6 +149,9 @@ fn a_busy_source_profile_is_reported_and_not_copied() {
 
 #[test]
 fn the_source_is_chosen_inside_the_family_and_its_copies_are_shared_in_the_index() {
+    if !common::filesystem_can(|caps| caps.clone, "share blocks") {
+        return;
+    }
     let family = Family::new();
     let mut index = nowhere(&family.worktree_ws);
     // What `run` leaves behind: the source files hashed, none of them shared yet.

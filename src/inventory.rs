@@ -53,6 +53,9 @@ pub struct Target {
     /// The latest build of any profile, as unix seconds.
     pub last_built_unix: Option<u64>,
     /// Units per rustc over the profile dirs, the compiler cargo uses here first.
+    /// What the filesystem under this target can do for the lossless passes. A pass whose
+    /// capability is false finds no work here, and says so by planning none.
+    pub caps: crate::sys::Caps,
     pub toolchains: Vec<crate::toolchains::Built>,
     /// Units left behind by a compiler that is no longer the one in use.
     pub stale_units: usize,
@@ -122,7 +125,9 @@ pub fn inventory(roots: &[PathBuf]) -> io::Result<Inventory> {
         })
         .collect();
     for (target, bytes) in targets.iter_mut().zip(candidates) {
-        target.dedupe_candidate_bytes = bytes;
+        // An upper bound on a filesystem that shares no blocks is not an upper bound, it is a
+        // promise the pass cannot keep. Zero is the honest figure there.
+        target.dedupe_candidate_bytes = if target.caps.clone { bytes } else { 0 };
     }
 
     targets.sort_by(|a, b| {
@@ -160,6 +165,7 @@ fn inspect(root: &Path) -> io::Result<(Target, HashMap<u64, u64>)> {
         doc_bytes: 0,
         incremental_bytes: 0,
         dedupe_candidate_bytes: 0,
+        caps: crate::sys::Caps::NONE,
         toolchains: Vec::new(),
         stale_units: 0,
         stale_bytes_estimate: 0,
@@ -194,6 +200,12 @@ fn inspect(root: &Path) -> io::Result<(Target, HashMap<u64, u64>)> {
         }
     }
 
+    target.caps = crate::sys::caps(&target.root);
+    if !target.caps.compress {
+        // Same reasoning as `dedupe_candidate_bytes`: nothing here is compressible if the
+        // filesystem does not compress, whatever the files' sizes say.
+        target.compressible_bytes = 0;
+    }
     let dirs: Vec<PathBuf> = target.profiles.iter().map(|p| p.dir.clone()).collect();
     target.toolchains = crate::toolchains::scan(&dirs);
     target.stale_units = crate::toolchains::stale(&target.toolchains);

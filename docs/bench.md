@@ -56,6 +56,35 @@ The dry runs, taken on the pristine targets before anything was rewritten, predi
 compressible and 1.08 GiB duplicated. Dedupe then runs on already compressed files, which is why
 it recovers 407 MiB rather than the full gigabyte.
 
+## Linux, btrfs
+
+A second machine, a different workload, and the reason the table above has a twin: on btrfs the
+win does not show up where macOS shows it. Measured in a Linux VM (Ubuntu 24.04, 4 cores, a
+6 GiB btrfs loopback image mounted with default options) on an unshared copy of a real cargo
+target — `cargo-tare`'s own, 1.33 GiB, one checkout and therefore no family for dedupe to
+compare against.
+
+| Pass | `du` before | `du` after | `du` delta | Free space delta | Wall clock |
+| --- | --- | --- | --- | --- | --- |
+| compress (1553 files) | 1.33 GiB | 1.34 GiB | **0** | **+818 MiB** | 9 s |
+| dedupe (14 files) | 1.34 GiB | 1.34 GiB | 0 | +76 KiB | <1 s |
+
+**On btrfs, read only the free-space column.** btrfs reports the *uncompressed* size in
+`st_blocks`, so `du` cannot see compression there and neither can the tool: the run above prints
+`applied 1553 (0 bytes)` while the volume gained 818 MiB. That zero is the platform telling the
+truth about what it measures, not a pass that did nothing — `compsize` per file and `df` per
+volume are where the win is visible. On APFS the same figure is real, which is why
+`sys::ALLOCATED_SHOWS_COMPRESSION` exists and why the A/B tests branch on it.
+
+The dedupe row is small because this target has no sibling: the pass only had one checkout to
+work with, so the 407 MiB of the macOS run has no counterpart here. Sharing itself works —
+`tests/caps.rs` asserts the clone happens on a filesystem that can, and nothing is planned on
+one that cannot.
+
+ext4 is the other side of the same measurement: `caps` finds neither capability there, both
+lossless passes plan nothing, and `status` says so in a line under the target. Making ext4 win
+anything needs the link fallback, which is `T22`.
+
 ## What the passes cost
 
 | | wall clock |

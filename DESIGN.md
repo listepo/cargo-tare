@@ -610,32 +610,61 @@ Everything that differs between platforms lives in one module and nothing above 
 mod imp;
 ```
 
-Each file supplies the same eleven items: `file_id`, `nlink`, `allocated`, `flags`, `mode`,
-`set_mode`, `symlink`, `clone_file`, a `Compressor`, and the two capability constants
-`CAN_CLONE` and `CAN_COMPRESS`.
+Each file supplies the same items: `file_id`, `nlink`, `allocated`, `flags`, `mode`, `set_mode`,
+`symlink`, `clone_file`, a `Compressor`, the constants `COMPRESSED` and
+`ALLOCATED_SHOWS_COMPRESSION`, and `caps`.
 
-**The capabilities are what the passes read.** A pass whose capability is false plans nothing —
-`Dedupe::plan` and `Compress::plan` return an empty plan before they read a single file. That is
-not politeness: a "clone" that the filesystem cannot share is a second copy of the bytes, and a
-compression pass with no backend would clone every candidate only to throw the copy away. Doing
-nothing is the correct answer, and saying so in the report is the honest one.
+**`caps(dir)` is what the passes read.** A pass whose capability is false plans nothing there —
+`Dedupe::plan` and `Compress::plan` filter the profiles by it before reading a single file. That
+is not politeness: a "clone" that the filesystem cannot share is a second copy of the bytes, and
+a compression pass with no backend would clone every candidate only to throw the copy away.
+Doing nothing is the correct answer, and `status` printing *this filesystem shares no blocks:
+dedupe finds nothing here* is the honest one.
 
-They are compile-time floors, not filesystem facts. macOS is APFS in every case that matters, so
-both are true there. On Linux a clone depends on what is under the root (btrfs and XFS reflink,
-ext4 does not) and compression on btrfs's `chattr +c`; on Windows NTFS compresses but does not
-clone, while ReFS clones but does not compress. Turning the constants into a probe per root is
-`T20` and `T21`. Until then those platforms report no capability rather than guess: the tool
-builds, walks, and tells the truth about sizes everywhere, and only acts where it knows it wins.
+It is a question about a filesystem, not about a platform, so it is asked per directory and
+cached per `st_dev` — a run over forty target dirs on one disk probes once. On Linux the probe
+writes a 64 KiB temp file and tries `FICLONE` into a second one. A table of filesystem names
+would get btrfs mounted `nodatacow`, XFS made with `reflink=0` and a bind-mounted ext4 wrong;
+trying does not. Compression is the exception, and it is asked by name — `statfs().f_type`
+against `BTRFS_SUPER_MAGIC` — because there the attempt lies: ext4 accepts `FS_COMPR_FL`, keeps
+it where `lsattr` shows it, and compresses nothing. macOS
+answers true for both without asking (APFS is what every number in `docs/bench.md` came from),
+Windows answers `Caps::NONE` until `T21`.
 
 | | macOS (APFS) | Linux | Windows |
 | --- | --- | --- | --- |
 | identity | `st_dev` + `st_ino` | `st_dev` + `st_ino` | the path (no handle, no inode) |
 | link count | `st_nlink` | `st_nlink` | 1 — links are invisible without a handle |
 | size on disk | `st_blocks × 512` | `st_blocks × 512` | logical length |
-| flags | `st_flags` (`UF_COMPRESSED`) | none read yet (`FS_IOC_GETFLAGS` is an ioctl) | `FILE_ATTRIBUTE_*`, masked to the ones that mean something |
-| clone | `fs::copy` → `fclonefileat` | `fs::copy` → `copy_file_range` (reflink on btrfs/XFS) | plain copy |
-| compress | applesauce (LZFSE) | — | — |
-| `CAN_CLONE` / `CAN_COMPRESS` | true / true | false / false | false / false |
+| flags | `st_flags` (`UF_COMPRESSED`) | `FS_IOC_GETFLAGS`, masked to `COMPR`, `IMMUTABLE`, `APPEND`, `NOCOW` | `FILE_ATTRIBUTE_*`, masked to the ones that mean something |
+| clone | `fs::copy` → `fclonefileat` | `FICLONE` (btrfs, XFS `reflink=1`, bcachefs) | plain copy |
+| compress | applesauce (LZFSE) | `FS_COMPR_FL` + rewrite (btrfs) | — |
+| probe | write test only | `FICLONE` and `FS_IOC_SETFLAGS` | none; `Caps::NONE` |
+
+Two Linux details that are easy to get wrong:
+
+- `clone_file` is `FICLONE`, not `fs::copy`. `fs::copy` reflinks on btrfs and silently writes a
+  second copy on ext4, which is the one failure mode a dedupe pass must not have. `seed` is the
+  caller that wants a copy either way, so it asks `caps` once and falls back to `fs::copy`
+  itself, reporting `shared_blocks: false` when it did.
+- Setting `FS_COMPR_FL` compresses *new writes*, so the flag alone shrinks nothing. The
+  compressor sets it on the engine's private copy and rewrites the copy through itself —
+  `btrfs filesystem defragment -c` for one file. The engine already hands it a clone nobody else
+  can see, so the rewrite costs a copy that was going to be made anyway.
+- Reading the flags costs an `open` per file, because Linux keeps them behind an ioctl rather
+  than in `stat`. `flags` pays it only where `caps` says compression exists at all; scanning a
+  70 000-file target on ext4 opens nothing.
+- **The probe puts the directory's mtime back.** Creating and removing a file moves the mtime of
+  the directory it is in, and that mtime is how `evict` and `incremental` tell a profile nobody
+  has built for a week from one built this morning. Probing inside a profile dir without
+  restoring it makes every target look freshly built, and the only symptom is a pass quietly
+  planning nothing — found exactly that way, by `tests/incremental.rs` failing on btrfs and
+  nowhere else.
+
+`FIDEDUPERANGE` is deliberately unused. The engine already replaces whole inode groups
+atomically, re-checks every stamp under cargo's lock and restores mode and mtime; an in-place
+dedupe would be a second apply path with the same invariants to maintain and nothing the first
+one does not give.
 
 `applesauce` is a macOS-only dependency (`[target.'cfg(target_os = "macos")'.dependencies]`), so
 the other two platforms do not build it at all.
@@ -645,7 +674,11 @@ a link count always reads 1. That is consistent — `model::scan` groups by the 
 checks against — and it is inert, because nothing is planned there. `GetFileInformationByHandle`
 replaces it in `T21`.
 
-What the tests cover: the suite runs where the machine is (macOS), and `src/sys/mod.rs` holds
-the three facts that must hold on every platform — a file has an identity of its own and a size
-on disk, a clone holds the bytes of its source, and an empty batch costs nothing. `just
-check-cross` compiles both other targets, which is what catches a port that stopped building.
+What the tests cover: `src/sys/mod.rs` holds the facts that must hold on every platform — a file
+has an identity of its own and a size on disk, a clone holds the bytes of its source, an empty
+batch costs nothing, and the probe answers the same thing twice, cleans up after itself and
+claims nothing about a directory it cannot read. `tests/caps.rs` states both outcomes for each
+pass and picks by `caps`, so the same test is an assertion on every filesystem: on btrfs the
+twin becomes a clone, on ext4 nothing is planned and nothing is touched. Point `TMPDIR` at a
+mount to choose the side. `just check-cross` compiles both other targets, which is what catches
+a port that stopped building.

@@ -72,7 +72,7 @@ impl Inode {
         Ok(Self {
             stamp: Stamp::of(path, meta)?,
             mode: sys::mode(meta),
-            flags: sys::flags(meta),
+            flags: sys::flags(path, meta),
             nlink: sys::nlink(meta),
             allocated: sys::allocated(meta),
             paths: Vec::new(),

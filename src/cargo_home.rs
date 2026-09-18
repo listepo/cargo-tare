@@ -59,7 +59,9 @@ pub fn inspect(home: &Path) -> io::Result<Stats> {
             stats.logical_bytes += inode.stamp.size;
             if inode.flags & COMPRESSED != 0 {
                 stats.compressed_bytes += inode.allocated;
-            } else if inode.stamp.size >= crate::compress::DEFAULT_MIN_SIZE {
+            } else if inode.stamp.size >= crate::compress::DEFAULT_MIN_SIZE
+                && crate::sys::caps(&dir).compress
+            {
                 stats.compressible_bytes += inode.allocated;
             }
         }

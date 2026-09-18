@@ -26,6 +26,30 @@ pub const BUILD_SLEEP_ENV: &str = "TARE_FIXTURE_BUILD_SLEEP_SECS";
 /// Name of the fixture's binary inside a profile dir.
 pub const BIN: &str = "fx";
 
+/// Stops a test that has nothing to measure on this filesystem, and says so out loud.
+///
+/// A pass that shares blocks or compresses can only be observed where the filesystem does one of
+/// those, and on ext4 it does neither: there is no "replaced the hardlink group" to assert. That
+/// side is not left untested, it is tested somewhere else — `tests/caps.rs` runs the same passes
+/// on the same fixture and asserts they plan nothing and touch nothing. Here, an early return
+/// with a line on stderr beats an assertion that could only restate it.
+///
+/// ```ignore
+/// if !common::filesystem_can(|caps| caps.clone, "dedupe") { return; }
+/// ```
+#[must_use]
+pub fn filesystem_can(has: fn(&cargo_tare::sys::Caps) -> bool, what: &str) -> bool {
+    let dir = std::env::temp_dir();
+    if has(&cargo_tare::sys::caps(&dir)) {
+        return true;
+    }
+    eprintln!(
+        "skipped: {} cannot {what}; tests/caps.rs covers that side",
+        dir.display()
+    );
+    false
+}
+
 const FILES: &[(&str, &str)] = &[
     (
         "ws/Cargo.toml",

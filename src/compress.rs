@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime};
 use crate::engine::{Action, Pass};
 use crate::index::HashIndex;
 use crate::model::{Inode, Profile};
-use crate::sys::{CAN_COMPRESS, Compressor};
+use crate::sys::{self, Compressor};
 
 /// Two APFS blocks: below that there is at most one block to win.
 pub const NAME: &str = "compress";
@@ -56,15 +56,13 @@ impl Pass for Compress<'_> {
     }
 
     fn plan(&self, profiles: &[Profile]) -> Vec<Action> {
-        // No transparent compression under this root means no copy is worth making: the engine
-        // would clone every candidate only to throw the copy away again.
-        if !CAN_COMPRESS {
-            return Vec::new();
-        }
         let now = SystemTime::now();
         let index = self.index.borrow();
         profiles
             .iter()
+            // No transparent compression under this dir means no copy there is worth making:
+            // the engine would clone every candidate only to throw the copy away again.
+            .filter(|profile| sys::caps(&profile.dir).compress)
             .flat_map(|profile| &profile.inodes)
             .filter(|inode| self.eligible(inode, now))
             // Compressing a clone un-shares it and wins nothing until its twins follow.

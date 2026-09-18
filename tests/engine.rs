@@ -87,6 +87,9 @@ fn only_skip(report: &Report) -> &Skip {
 
 #[test]
 fn replaces_whole_hardlink_group_and_keeps_mtime_and_mode() {
+    if !common::filesystem_can(|caps| caps.clone, "share blocks") {
+        return;
+    }
     let (_tmp, dir) = profile();
     let member = dir.join("deps/member");
     let link = dir.join("member-link");
@@ -231,6 +234,9 @@ fn paths_outside_locked_profiles_are_refused() {
 
 #[test]
 fn lossy_pass_runs_only_when_named() {
+    if !common::filesystem_can(|caps| caps.clone, "share blocks") {
+        return;
+    }
     let (_tmp, dir) = profile();
     let pass = FnPass {
         lossy: true,
@@ -290,6 +296,9 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[test]
 fn running_build_is_not_disturbed_and_replaced_artifacts_stay_fresh() {
+    if !common::filesystem_can(|caps| caps.clone, "share blocks") {
+        return;
+    }
     let fixture = Fixture::new();
     let target = fixture.target();
     let profile = target.join("debug");

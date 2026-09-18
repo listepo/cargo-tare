@@ -46,6 +46,9 @@ fn run(tmp: &Path, roots: [&Fixture; 2], extra: &[&str]) -> assert_cmd::Command 
 /// copy's inode was replaced — and that its bytes and its mtime were not.
 #[test]
 fn ab_only_across_families_shares_the_file_and_neither_build_goes_stale() {
+    if !common::filesystem_can(|caps| caps.clone, "share blocks") {
+        return;
+    }
     let (control_a, control_b) = pair();
     let (treatment_a, treatment_b) = pair();
     let before = |fixture: &Fixture| {

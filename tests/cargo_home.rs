@@ -71,10 +71,27 @@ fn run(home: &Path, extra: &[&str]) -> assert_cmd::Command {
     cmd
 }
 
+/// Files under `dir` the filesystem is holding compressed.
+fn compressed_files(dir: &Path) -> usize {
+    walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .filter(|entry| {
+            entry.metadata().is_ok_and(|meta| {
+                cargo_tare::sys::flags(entry.path(), &meta) & cargo_tare::sys::COMPRESSED != 0
+            })
+        })
+        .count()
+}
+
 /// A/B: two identical homes, `--cargo-home` the only difference. Only the named one shrinks,
 /// and not one byte of content or one mtime changes with it.
 #[test]
 fn ab_only_the_named_home_is_compressed_and_nothing_in_it_changes() {
+    if !common::filesystem_can(|caps| caps.compress, "compress") {
+        return;
+    }
     let (_tmp_a, control) = home();
     let (_tmp_b, treatment) = home();
     let before = contents(&treatment);
@@ -92,12 +109,22 @@ fn ab_only_the_named_home_is_compressed_and_nothing_in_it_changes() {
         .stderr(contains("no cargo target dirs found"));
     run(&treatment, &[]).assert().success();
 
-    assert!(
-        sources(&treatment) < sources(&control),
-        "{} vs {}",
-        sources(&treatment),
-        sources(&control)
-    );
+    // btrfs compresses and still reports the uncompressed size in `st_blocks`, so on a
+    // filesystem like that the win is real and the number cannot show it. What is observable
+    // everywhere is the flag: the sources came back compressed.
+    if cargo_tare::sys::ALLOCATED_SHOWS_COMPRESSION {
+        assert!(
+            sources(&treatment) < sources(&control),
+            "{} vs {}",
+            sources(&treatment),
+            sources(&control)
+        );
+    } else {
+        assert!(
+            compressed_files(&treatment.join("registry/src")) > 0,
+            "nothing in the sources carries the compressed flag"
+        );
+    }
     assert_eq!(contents(&treatment), before, "content and mtimes are kept");
 }
 
@@ -133,6 +160,9 @@ fn a_held_package_cache_stops_the_run_without_touching_anything() {
 
 #[test]
 fn a_dry_run_reports_the_home_as_its_own_group_and_changes_nothing() {
+    if !common::filesystem_can(|caps| caps.compress, "compress") {
+        return;
+    }
     let (_tmp, home) = home();
     let before = contents(&home);
 
@@ -187,7 +217,14 @@ fn status_measures_the_home_only_when_asked() {
     let stats = &inventory["cargo_home"];
     assert_eq!(stats["home"], home.to_str().unwrap());
     assert!(stats["allocated_bytes"].as_u64().unwrap() > 0);
-    assert!(stats["compressible_bytes"].as_u64().unwrap() > 0);
+    let compressible = stats["compressible_bytes"].as_u64().unwrap();
+    if cargo_tare::sys::caps(&home).compress {
+        assert!(compressible > 0);
+    } else {
+        // Nothing here is compressible if the filesystem does not compress, whatever the
+        // files' sizes say.
+        assert_eq!(compressible, 0);
+    }
 
     let plain = tare(&config_home)
         .args(["status", "--json"])

@@ -66,7 +66,7 @@ fn root() -> (TempDir, PathBuf) {
 }
 
 fn is_compressed(path: &Path) -> bool {
-    sys::flags(&fs::metadata(path).unwrap()) & sys::COMPRESSED != 0
+    sys::flags(path, &fs::metadata(path).unwrap()) & sys::COMPRESSED != 0
 }
 
 fn temps_left(dir: &Path) -> usize {

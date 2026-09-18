@@ -205,6 +205,21 @@ fn gib(bytes: u64) -> String {
     format!("{:.2} GiB", bytes as f64 / BYTES_PER_GIB)
 }
 
+/// What the filesystem under a target cannot do, in the words of the passes it silences.
+/// `None` when it can do everything, which needs no line.
+fn missing_caps(caps: &cargo_tare::sys::Caps) -> Option<&'static str> {
+    match (caps.clone, caps.compress) {
+        (true, true) => None,
+        (true, false) => {
+            Some("this filesystem has no transparent compression: compress finds nothing here")
+        }
+        (false, true) => Some("this filesystem shares no blocks: dedupe finds nothing here"),
+        (false, false) => Some(
+            "this filesystem neither shares blocks nor compresses: both lossless passes find nothing here",
+        ),
+    }
+}
+
 fn status(json: bool, home: Option<PathBuf>, mut roots: Vec<PathBuf>) -> Result<()> {
     if roots.is_empty() {
         // The same `roots` key `run` uses; `.` stays the fallback when there is none.
@@ -242,6 +257,11 @@ fn status(json: bool, home: Option<PathBuf>, mut roots: Vec<PathBuf>) -> Result<
             gib(target.allocated_bytes),
             target.root.display()
         );
+        // Only worth a line when something is missing: a filesystem that does both is the
+        // case the numbers above already assume.
+        if let Some(missing) = missing_caps(&target.caps) {
+            println!("  {:>11}  {missing}", "");
+        }
         if target.stale_units > 0 {
             let units: usize = target.toolchains.iter().map(|built| built.units).sum();
             println!(

@@ -57,6 +57,9 @@ fn run(dirs: &[PathBuf], index: &Path, min_age: Duration) -> (PassReport, usize)
 
 #[test]
 fn equal_files_are_cloned_once_and_the_second_run_does_nothing() {
+    if !common::filesystem_can(|caps| caps.clone, "share blocks") {
+        return;
+    }
     let (tmp, dirs) = two_profiles();
     let index = tmp.path().join("cache/index.bin");
     let (a, b) = (
@@ -88,6 +91,9 @@ fn equal_files_are_cloned_once_and_the_second_run_does_nothing() {
 
 #[test]
 fn only_a_rewritten_file_is_hashed_again() {
+    if !common::filesystem_can(|caps| caps.clone, "share blocks") {
+        return;
+    }
     let (tmp, dirs) = two_profiles();
     let index = tmp.path().join("index.bin");
     let b = dirs[1].join("deps/libx.rlib");
@@ -123,6 +129,9 @@ fn hot_and_small_files_are_left_alone() {
 
 #[test]
 fn index_survives_a_round_trip_and_ignores_garbage() {
+    if !common::filesystem_can(|caps| caps.clone, "share blocks") {
+        return;
+    }
     let (tmp, dirs) = two_profiles();
     let index = tmp.path().join("index.bin");
     run(&dirs, &index, Duration::ZERO);
@@ -146,6 +155,9 @@ fn index_survives_a_round_trip_and_ignores_garbage() {
 
 #[test]
 fn sibling_cargo_targets_share_artifacts_and_stay_fresh() {
+    if !common::filesystem_can(|caps| caps.clone, "share blocks") {
+        return;
+    }
     let fixture = Fixture::new();
     let targets = [fixture.root.join("target-a"), fixture.root.join("target-b")];
     for target in &targets {

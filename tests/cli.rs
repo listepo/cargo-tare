@@ -70,6 +70,12 @@ fn missing_root_is_named_in_the_error() {
 
 #[test]
 fn passes_and_size_floors_are_picked_by_flag() {
+    if !common::filesystem_can(
+        |caps| caps.clone && caps.compress,
+        "share blocks or compress",
+    ) {
+        return;
+    }
     let tmp = TempDir::new().unwrap();
     let root = tmp.path().canonicalize().unwrap();
     fake_target(&root, "p", 64, 0);

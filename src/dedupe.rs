@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use crate::engine::{Action, Pass, Replace};
 use crate::index::{Hash, HashIndex};
 use crate::model::{Inode, Profile, Stamp};
-use crate::sys::{CAN_CLONE, COMPRESSED};
+use crate::sys::{self, COMPRESSED};
 
 /// One APFS block. A smaller file occupies one block either way; nothing to gain.
 pub const NAME: &str = "dedupe";
@@ -62,15 +62,15 @@ impl Pass for Dedupe<'_> {
     }
 
     fn plan(&self, profiles: &[Profile]) -> Vec<Action> {
-        // Without copy-on-write a "clone" is a second copy of the bytes: the same disk for more
-        // churn. Nothing to plan, and nothing is read to find it out.
-        if !CAN_CLONE {
-            return Vec::new();
-        }
         let now = SystemTime::now();
         // A file whose size is unique on its device has no twin: never read it.
         let mut by_size: HashMap<(u64, u64), Vec<&Inode>> = HashMap::new();
-        for inode in profiles.iter().flat_map(|p| &p.inodes) {
+        // Without copy-on-write a "clone" is a second copy of the bytes: the same disk for more
+        // churn. Nothing to plan there, and not one file is read to find it out.
+        let sharing = profiles
+            .iter()
+            .filter(|profile| sys::caps(&profile.dir).clone);
+        for inode in sharing.flat_map(|p| &p.inodes) {
             if self.eligible(inode, now) {
                 let key = (inode.stamp.dev, inode.stamp.size);
                 by_size.entry(key).or_default().push(inode);

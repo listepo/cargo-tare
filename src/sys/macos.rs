@@ -8,14 +8,17 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use super::Caps;
 use applesauce::FileCompressor;
 use applesauce::compressor::Kind;
 use applesauce::progress::{Progress, SkipReason, Task};
 
-pub const CAN_CLONE: bool = true;
-pub const CAN_COMPRESS: bool = true;
 /// `UF_COMPRESSED` from `<sys/stat.h>`: the file is transparently compressed.
 pub const COMPRESSED: u32 = 0x20;
+
+/// APFS charges the compressed size in `st_blocks`, so every figure the reports print — `du`'s
+/// number, the engine's `freed_bytes` — shows the compression win by itself.
+pub const ALLOCATED_SHOWS_COMPRESSION: bool = true;
 
 /// `st_blocks` counts 512-byte units whatever the filesystem block size is.
 const ST_BLOCK_BYTES: u64 = 512;
@@ -43,9 +46,31 @@ pub fn allocated(meta: &Metadata) -> u64 {
     meta.blocks() * ST_BLOCK_BYTES
 }
 
-/// BSD file flags (`st_flags`): `COMPRESSED`, and the ones that are not ours to drop.
-pub fn flags(meta: &Metadata) -> u32 {
+/// BSD file flags (`st_flags`): `COMPRESSED`, and the ones that are not ours to drop. They sit
+/// in the stat the caller already has, so the path is not read.
+pub fn flags(_path: &Path, meta: &Metadata) -> u32 {
     std::os::macos::fs::MetadataExt::st_flags(meta)
+}
+
+/// APFS clones and compresses, and it is what every measurement in `docs/bench.md` was taken
+/// on; the probe only asks whether the directory can be written to at all, because a capability
+/// nothing can be tried in is not one we may claim.
+///
+// ponytail: an HFS+ or SMB volume on a Mac would get `true` here and lose the dedupe pass its
+// gain (`fs::copy` falls back to a byte copy silently). Call `fclonefileat` on a probe file the
+// way `unix.rs` calls `FICLONE` if such a volume ever turns up in a benchmark.
+pub fn caps(dir: &Path) -> Caps {
+    super::probing_in(dir, || {
+        let probe = super::probe_path(dir);
+        if fs::write(&probe, b"tare").is_err() {
+            return Caps::NONE;
+        }
+        let _ = fs::remove_file(&probe);
+        Caps {
+            clone: true,
+            compress: true,
+        }
+    })
 }
 
 pub fn mode(meta: &Metadata) -> u32 {

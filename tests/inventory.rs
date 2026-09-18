@@ -74,7 +74,13 @@ fn allocated_size_matches_du_with_hardlinks_and_files_outside_profiles() {
     assert!(profile.allocated_bytes < found.allocated_bytes);
     assert_eq!(profile.last_built_unix, found.last_built_unix);
     assert!(found.last_built_unix.is_some());
-    assert!(found.compressible_bytes >= 3 * MIB as u64);
+    // The figure is what this filesystem could actually compress, so where it compresses
+    // nothing the honest answer is zero — `tests/caps.rs` runs the pass on both sides.
+    if cargo_tare::sys::caps(&target).compress {
+        assert!(found.compressible_bytes >= 3 * MIB as u64);
+    } else {
+        assert_eq!(found.compressible_bytes, 0);
+    }
 }
 
 #[test]
@@ -138,8 +144,15 @@ fn worktrees_form_a_family_and_a_removed_record_reads_as_orphaned() {
         (&in_worktree.family, in_worktree.orphaned),
         (&family, false)
     );
-    assert!(in_main.dedupe_candidate_bytes >= MIB as u64);
-    assert!(in_worktree.dedupe_candidate_bytes >= MIB as u64);
+    // An upper bound on what dedupe could share, which is nothing where blocks cannot be
+    // shared at all.
+    if cargo_tare::sys::caps(&in_main.root).clone {
+        assert!(in_main.dedupe_candidate_bytes >= MIB as u64);
+        assert!(in_worktree.dedupe_candidate_bytes >= MIB as u64);
+    } else {
+        assert_eq!(in_main.dedupe_candidate_bytes, 0);
+        assert_eq!(in_worktree.dedupe_candidate_bytes, 0);
+    }
     let in_loose = find(&before, &loose.join("target"));
     assert_eq!((&in_loose.family, in_loose.orphaned), (&None, false));
     assert_eq!(in_loose.dedupe_candidate_bytes, 0);

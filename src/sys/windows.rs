@@ -6,7 +6,9 @@
 //! (`FSCTL_DUPLICATE_EXTENTS_TO_FILE`) and the real file identity plus link count
 //! (`GetFileInformationByHandle`). All of that is `T21`, where it can be written with a machine
 //! to test it on; writing untestable `unsafe` FFI ahead of that machine is how it goes wrong.
-//! Until then both capabilities are false, so no pass plans a single action here.
+//! Until then [`caps`] finds nothing, so no pass plans a single action here.
+
+use super::Caps;
 
 use std::fs::{self, Metadata};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -14,10 +16,12 @@ use std::io;
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-pub const CAN_CLONE: bool = false;
-pub const CAN_COMPRESS: bool = false;
 /// `FILE_ATTRIBUTE_COMPRESSED`: NTFS is holding this file compressed.
 pub const COMPRESSED: u32 = 0x800;
+
+/// `allocated` is the logical length here until `GetCompressedFileSize` lands (`T21`), so it
+/// shows nothing about compression — and nothing compresses yet either.
+pub const ALLOCATED_SHOWS_COMPRESSION: bool = false;
 
 /// Attributes that mean "not ours to rewrite", plus `COMPRESSED` itself. Everything else NTFS
 /// reports — `ARCHIVE` on very nearly every file, `NOT_CONTENT_INDEXED`, `TEMPORARY` — says
@@ -30,7 +34,7 @@ const KNOWN: u32 = COMPRESSED | READONLY | HIDDEN | SYSTEM | REPARSE_POINT;
 
 /// No inode number is reachable without a handle, so identity is the path: distinct paths are
 /// distinct files. Two hardlinks to one file therefore look like two files — which is only ever
-/// a count in a report while [`CAN_CLONE`] is false, because nothing plans work from it.
+/// a count in a report while [`caps`] finds nothing here, because nothing plans work from it.
 pub fn file_id(path: &Path, _meta: &Metadata) -> (u64, u64) {
     let mut hasher = DefaultHasher::new();
     path.hash(&mut hasher);
@@ -49,8 +53,16 @@ pub fn allocated(meta: &Metadata) -> u64 {
     meta.file_size()
 }
 
-pub fn flags(meta: &Metadata) -> u32 {
+pub fn flags(_path: &Path, meta: &Metadata) -> u32 {
     meta.file_attributes() & KNOWN
+}
+
+/// Nothing is claimed here yet. NTFS compresses and ReFS clones, both through an `FSCTL` on an
+/// open handle, and both are `T21`; until then no probe can find a capability this module does
+/// not have, so none is run — not even a write test, because a capability of `NONE` is the
+/// answer either way.
+pub fn caps(_dir: &Path) -> Caps {
+    Caps::NONE
 }
 
 /// Windows permissions live in the ACL, not in a mode. Nothing is replaced here, so nothing
@@ -76,7 +88,7 @@ pub fn clone_file(source: &Path, destination: &Path) -> io::Result<()> {
 }
 
 /// Nothing to drive until `FSCTL_SET_COMPRESSION` is wired up; the compress pass plans no work
-/// at all ([`CAN_COMPRESS`]).
+/// at all ([`caps`]).
 #[derive(Default)]
 pub struct Compressor;
 

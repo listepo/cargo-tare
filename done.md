@@ -784,3 +784,83 @@ planned, replaced by `GetFileInformationByHandle` in T21; sizes there are logica
 until `GetCompressedFileSize`. `seed` works on all three: where blocks are shared the copy is
 free, where they are not it costs the disk and still saves the build. The test suite stayed
 macOS-only, so the tests in `src/sys/` are a contract for the ports rather than proof they run.
+
+### T20. Linux: reflink dedupe and filesystem compression
+
+With T19 in place, fill in the Linux half. Dedupe: `FICLONE` (btrfs, XFS with reflink=1, bcachefs)
+is the exact equivalent of `clonefile`; `FIDEDUPERANGE` is the safer variant that verifies the
+bytes in the kernel and works even when the target is shared already. `rustix` is already a
+dependency and covers both, so no new crate should be needed. Compression: btrfs takes
+`chattr +c` (`FS_COMPR_FL`) per file, and only new writes are compressed, so a file has to be
+rewritten to shrink — which is what the pass does anyway. ext4 has neither, so both passes must
+report "not supported here" rather than pretend.
+
+Done: the pass suite runs on a btrfs loopback image in CI, `ext4` falls back to T22 instead of
+failing, and `docs/bench.md` gains a Linux row.
+
+Plan: the capability stops being a constant. `sys::caps(dir) -> Caps { clone, compress }`, cached
+per `st_dev`, answers what the filesystem under a profile dir can actually do, and both lossless
+passes filter their profiles by it — which is also the answer to "report, do not pretend". On
+Linux the probe is empirical rather than a filesystem-name table: two temp files and one
+`FICLONE`, one `FS_IOC_SETFLAGS` with `FS_COMPR_FL`, both cleaned up. That gets XFS with
+`reflink=0`, btrfs mounted `nodatacow` and a bind-mounted ext4 right, which a name table does
+not. macOS keeps `true/true` (APFS is what it was measured on), Windows stays `false/false`
+until T21.
+
+`clone_file` on Linux becomes `FICLONE` through `rustix` instead of `fs::copy`, so a filesystem
+that cannot share blocks fails loudly here instead of silently copying them. The compressor sets
+`FS_COMPR_FL` on the engine's private copy and rewrites it through itself, because btrfs
+compresses new writes only; `flags` starts reading `FS_IOC_GETFLAGS` so the engine's
+"came back compressed" check works, and `st_blocks` then shows the win.
+
+`FIDEDUPERANGE` is deliberately not used: the engine already replaces whole inode groups
+atomically, re-checks every stamp under cargo's lock and restores mode and mtime, so an
+in-place dedupe would be a second apply path with the same invariants to maintain and nothing
+the first one does not already give. Say so if that call is wrong.
+
+Verify: `just check` and `just check-cross` here, then a Linux VM (lima) with a btrfs loopback
+image for the real suite, per the creator's choice of "compile first, then a VM". Nothing is
+claimed to work on btrfs before that VM has run it.
+
+Outcome: done, and two of the plan's own claims above turned out wrong — both found by running
+it rather than reading it.
+
+`sys::caps(dir) -> Caps { clone, compress }` landed as planned, cached per `st_dev`, and both
+lossless passes filter their profiles by it before reading a file. `status` prints what the
+filesystem cannot do under each target, and the inventory no longer counts savings it cannot
+deliver: `compressible_bytes` and `dedupe_candidate_bytes` are zero where the capability is
+missing, in the JSON as well as the text.
+
+What the plan got wrong:
+
+1. **The compression probe cannot be an attempt.** ext4 accepts `FS_IOC_SETFLAGS` with
+   `FS_COMPR_FL`, keeps the flag where `lsattr` shows it, and compresses nothing — 200 MiB
+   written with it set took 200 MiB. Measuring the file afterwards does not rescue the probe
+   either, because btrfs reports the *uncompressed* size in `st_blocks`. Compression is now
+   decided by `statfs().f_type == BTRFS_SUPER_MAGIC`; cloning stays a real `FICLONE`, which does
+   tell the truth.
+2. **`st_blocks` does not show the win on btrfs.** The plan said it would. A measured run
+   compressed 1553 files and printed `applied 1553 (0 bytes)` while the volume gained 818 MiB —
+   the pass worked, the platform cannot report it. `sys::ALLOCATED_SHOWS_COMPRESSION` says which
+   platform is which, the A/B tests branch on it, and `docs/bench.md` has the Linux table with
+   the free-space column marked as the only one to read there.
+
+One real bug came out of the VM that no amount of macOS testing would have found: the capability
+probe created and removed temp files inside the directory it probed, which moved that directory's
+mtime — the same mtime `evict` and `incremental` read to tell an idle profile from a busy one.
+Every target looked freshly built and `incremental` quietly planned nothing. The probe now puts
+the mtime back, and `sys::tests::the_probe_cleans_up_after_itself` fails if it ever stops.
+
+Verified: `just check` and `just check-cross` on macOS, the full suite green on macOS, and in a
+lima VM (Ubuntu 24.04) on two loopback images — btrfs: 21 suites green; ext4: 21 suites green,
+with `caps` finding neither capability and both passes planning nothing. Tests that can only be
+observed where blocks are shared use `common::filesystem_can`, which returns early with a line on
+stderr; the other side of each is asserted in `tests/caps.rs`, which runs the same fixture and
+the same passes on both filesystems. One flake seen once under full parallel load on the ext4
+image (`harness::oracle_is_green_on_an_untouched_build_and_sees_a_changed_mtime`, green alone and
+green on the next full run) — fixture build timing in a 4-core VM, not a pass.
+
+Not done, and deliberately: the suite runs in a local VM, not in CI — the creator chose
+"compile first, then a local VM" over GitHub Actions. `ideas.md` carries the CI job as an idea.
+`FIDEDUPERANGE` stays unused for the reason the card gives; nothing measured here changed that.
+ext4 still wins nothing, which is T22.
