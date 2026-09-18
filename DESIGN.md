@@ -450,6 +450,22 @@ target is busy. That is the same guard `orphans` and whole-target eviction use, 
 The size comes from the inventory (`Target::doc_bytes`), since the engine itself scans only
 profile dirs. The build oracle is untouched by it: after the pass cargo reports nothing stale.
 
+## Across families (`--across-families`)
+
+One engine run per family keeps a run's locks inside the repository it is working on, and that
+is where most duplicates are. It is not where all of them are: the same version of the same crate
+built with the same features is byte-identical in two unrelated projects, and the hash index
+already knows it.
+
+The flag changes nothing but the grouping — every target under the roots goes into one group
+instead of one per family, and the report names that group `<across families>`. The engine
+already compares whatever profile dirs it is given and already takes its locks in sorted order,
+so nothing else had to move and deadlock stays impossible. What it costs is the lock: a run holds
+every target's profile locks for its whole length, which on the benchmark workspace is more than
+a minute of no builds anywhere. That is why it is opt-in and stays opt-in.
+
+Per-family `skip` still applies, because it is decided before the grouping.
+
 ## Toolchain report (`src/toolchains.rs`)
 
 A toolchain upgrade does not clean up after itself: cargo compiles every unit again under new

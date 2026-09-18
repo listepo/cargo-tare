@@ -26,6 +26,8 @@ const BYTES_PER_GIB: f64 = (1u64 << 30) as f64;
 /// Exit code when a profile dir was skipped because a build holds its lock.
 const BUSY_EXIT: u8 = 2;
 /// Every pass that deletes rebuildable data; `--lossy` takes these names.
+/// What the report calls the one group `--across-families` makes, in place of a family dir.
+const ACROSS_FAMILIES: &str = "<across families>";
 const LOSSY_PASSES: [&str; 4] = [orphans::NAME, evict::NAME, incremental::NAME, doc::NAME];
 /// Every pass, in pipeline order; `--pass` takes these names.
 const PASSES: [&str; 6] = [
@@ -134,6 +136,10 @@ struct RunArgs {
     /// under cargo's own `.package-cache` lock [default: $CARGO_HOME, else ~/.cargo]
     #[arg(long, value_name = "DIR", num_args = 0..=1, default_missing_value = "")]
     cargo_home: Option<PathBuf>,
+    /// Compare every target under the roots with every other, not only the targets of one
+    /// repository: unrelated projects do share artifacts, at the price of one wider lock
+    #[arg(long)]
+    across_families: bool,
     /// Content-hash cache [default: ~/.cache/cargo-tare/hashes-v1.bin]
     #[arg(long, value_name = "FILE")]
     index: Option<PathBuf>,
@@ -556,12 +562,22 @@ fn run(args: RunArgs) -> Result<Done> {
         .into_iter()
         .filter(|pass| args.pass.is_empty() || args.pass.iter().any(|name| name == pass.name()))
         .collect();
+    // One group per family keeps a run's locks inside the repository it is working on. Across
+    // families every target is compared with every other — unrelated projects do share
+    // artifacts — and the price is that the locks of all of them are held for the whole run.
+    let across = args.across_families || config.across_families;
     let mut groups: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
     for target in inventory.targets {
-        let key = target.family.unwrap_or_else(|| target.root.clone());
-        if config.skips(&key) {
+        let family = target.family.unwrap_or_else(|| target.root.clone());
+        if config.skips(&family) {
             continue;
         }
+        // Not a path: the group is every family at once, and the report says so.
+        let key = if across {
+            PathBuf::from(ACROSS_FAMILIES)
+        } else {
+            family
+        };
         let dirs = target.profiles.into_iter().map(|profile| profile.dir);
         groups.entry(key).or_default().extend(dirs);
     }

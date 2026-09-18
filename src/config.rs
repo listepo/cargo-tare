@@ -26,6 +26,9 @@ pub struct Config {
     pub min_age: Option<u64>,
     /// Leave files smaller than this alone; both lossless passes.
     pub min_size: Option<u64>,
+    /// Compare targets of different repositories too, as `--across-families` does.
+    #[serde(default)]
+    pub across_families: bool,
     #[serde(default)]
     pub evict: Evict,
     #[serde(default)]

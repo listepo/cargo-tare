@@ -12,6 +12,9 @@ scripts/bench.sh ~/GitHub/listepo/apps/ketch          # RUNS=5 WITH_SCCACHE=1 by
 scripts/bench-cargo-home.sh                           # the cargo home, on a clone of it
 ```
 
+`WITH_ACROSS=0` skips the second independent clone, `WITH_SCCACHE=0` the sccache comparison, and
+`MIN_FREE_GIB` is the free-space guard the script refuses to run under.
+
 The script shallow-clones the workspace into a temp dir and adds one git worktree of that clone,
 so the two checkouts form a family and dedupe has siblings to compare. It builds offline after a
 single `cargo fetch`. **The workspace's own `target/` is never touched** — the tool only ever
@@ -87,6 +90,34 @@ Right after both passes, with nothing rebuilt in between, running the tool again
 **46** more actions (2.7 s). Dedupe's clones are new files that compress had never seen, so one
 pipeline run does not reach a fixed point. Nothing is lost by it — the next scheduled run picks
 them up — but a `run` that loops until it stops finding work would finish the job in one go.
+
+## Across families
+
+`--across-families` compares every target under the roots instead of one repository at a time.
+`scripts/bench.sh` measures it with a third checkout that is a **second independent clone** of
+the repository, not another worktree: its own `.git`, so its own family, holding the same
+dependencies built the same way — two unrelated projects, as far as the tool is concerned.
+
+This part was measured on **`cargo-tare` itself** rather than on `apps/ketch`: the machine had
+10 GiB free at the time and three checkouts of `ketch` do not fit under the script's own
+free-space guard. The targets are therefore an order of magnitude smaller, and only the ratio is
+worth reading.
+
+| | |
+| --- | --- |
+| the third clone's target, freshly built | 351.8 MiB |
+| deduped inside its own family first | nothing left to share |
+| then `--across-families` over all three | **+172.6 MiB free** in 1.9 s |
+| units not fresh afterwards, in either checkout | **0** |
+
+About half of a freshly built target was already on the disk, in a project that has nothing to
+do with it. That is the case one run per family cannot reach, and it is the whole argument for
+the flag. The argument against it is in the same numbers from the other benchmark: the run holds
+every target's build locks for its whole length, which on a 587-crate workspace is over a minute
+of no builds anywhere, so it stays opt-in.
+
+For context, from the same run: within one family (two checkouts of one repository) dedupe freed
+67 MiB after compression had already run.
 
 ## The cargo home
 

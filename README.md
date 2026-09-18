@@ -120,6 +120,14 @@ shell. One profile with a build running, or one built since the run started look
 target dir and the free profiles are evicted on their own. Only `target/` is ever removed; the
 sources next to it are not.
 
+`--across-families` compares every target under the roots with every other instead of one
+repository at a time. Unrelated projects do share bytes — the same crate, the same version, the
+same features — and the hash index already holds what it takes to find them. The price is a
+wider lock: the run holds every target's build locks for its whole length, so it is off by
+default and belongs in a scheduled run rather than between two builds. Measured
+(`docs/bench.md`): about half of a freshly built target was already on disk in an unrelated
+project — 172.6 MiB of 351.8 MiB — and nothing went stale.
+
 `status` and `advise` also report what a toolchain upgrade left behind: cargo records the
 compiler that built each unit in its own fingerprints, so units whose rustc is no longer the one
 in use are countable without parsing a single hashed file name. The bytes are an estimate — the
@@ -164,6 +172,7 @@ file named there must exist. An unknown key stops the run rather than being igno
 roots = ["~/code"]          # what `run` and `status` search when the command line names none
 lossy = ["orphans"]         # lossy passes to enable, as `--lossy` would; thresholds still apply
 min-age = 3600              # seconds; both lossless passes
+across-families = true      # compare targets of different repositories too
 min-size = 8192             # bytes; both lossless passes
 
 [evict]

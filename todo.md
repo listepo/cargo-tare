@@ -1,1 +1,3 @@
-- T18. Dedupe across families
+- T19. Platform layer: build and run on Linux and Windows
+- T20. Linux: reflink dedupe and filesystem compression
+- T21. Windows: NTFS compression and ReFS block cloning

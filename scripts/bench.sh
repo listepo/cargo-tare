@@ -34,7 +34,8 @@ mkdir -p "$WORK"
 RESULTS=$WORK/results.tsv
 : >"$RESULTS"
 INDEX=$WORK/hashes.bin
-export MISE_TRUSTED_CONFIG_PATHS=/Users/listepo/GitHub/listepo
+# The copies carry the workspace's own mise config, and they live outside the trusted tree.
+export MISE_TRUSTED_CONFIG_PATHS=/Users/listepo/GitHub/listepo:$WORK
 
 say() { printf '\n=== %s\n' "$*"; }
 record() { printf '%s\t%s\n' "$1" "$2" >>"$RESULTS"; echo "    $1 = $2"; }
@@ -130,6 +131,24 @@ for pass in compress dedupe; do
     fi
     incremental "incremental_after_$pass" "$WORK/a"
 done
+
+if [ "${WITH_ACROSS:-1}" = 1 ]; then
+    say "dedupe across families: a second, independent clone of the same repository"
+    # A clone, not a worktree: its own .git, so its own family. Two checkouts of the same
+    # dependencies in unrelated projects is the case one run per family cannot reach.
+    git clone --quiet --depth 1 "file://$SRC" "$WORK/d"
+    timed "build_clean_d" build "$WORK/d"
+    record "size_after_build_kib_d" "$(size_kib "$WORK/d/target")"
+    # Its own family first, so what is left is only what the other family holds.
+    tare run --pass dedupe "${TARE_ARGS[@]}" --index "$INDEX" "$WORK/d" \
+        >"$WORK/dedupe_d.log" 2>&1
+    record "free_before_across_kib" "$(df -k "$WORK" | awk 'NR==2 {print $4}')"
+    timed "tool_secs_across" tare run --pass dedupe --across-families "${TARE_ARGS[@]}" \
+        --index "$INDEX" "$WORK"
+    record "free_after_across_kib" "$(df -k "$WORK" | awk 'NR==2 {print $4}')"
+    record "stale_units_after_across_a" "$(stale_units "$WORK/a")"
+    record "stale_units_after_across_d" "$(stale_units "$WORK/d")"
+fi
 
 if [ "${WITH_SCCACHE:-1}" = 1 ]; then
     say "sccache: cold then warm cache, clean builds in a third checkout"

@@ -701,3 +701,54 @@ by rewriting the `rustc` hash in half the fingerprints and dating them back a mo
 exactly the state an upgrade leaves. No A/B test: this task adds no pass and changes nothing on
 disk.
 
+### T18. Dedupe across families
+
+Dedupe compares targets inside a family (a repository and its worktrees), because that is where
+the duplicates are. `fclones` and `jdupes` compare everything, and unrelated projects do share
+bytes: the same version of the same crate built with the same features is byte-identical, and the
+hash index already holds the hashes needed to find that out. What is missing is not the
+comparison but the locking: cloning across families means holding two families' locks at once,
+and the benchmark run showed a family's own pass takes ~80 s, so a wider lock is a real cost.
+
+Do it as an opt-in (`--across-families`), keep the sorted lock order that makes deadlock
+impossible, and measure the extra yield on the benchmark workspace before making it a default.
+Done: `docs/bench.md` gains the number, and a test proves two unrelated fixtures share a file
+without either build going stale.
+
+Plan: the engine already compares whatever profile dirs one run is given and already sorts its
+locks, so the whole change is in the grouping: `--across-families` (config `across-families`)
+puts every target under the roots into one group instead of one group per family. The report
+names that group `<across families>` rather than a family dir. Per-family `skip` still applies,
+because it is decided before the grouping. Verify: `tests/across_families.rs` — two fixtures in
+temp dirs of their own, each with the same file planted in its target the way an identical
+third-party artifact looks, run as an A/B where the flag is the only difference: with it the two
+files share an inode, without it they do not, and both builds are still fresh either way. Then
+`scripts/bench.sh` gets the second measurement and `docs/bench.md` the number.
+
+Outcome: done, and smaller than the card feared. The engine already compares whatever profile
+dirs one run is given and already takes its locks in sorted order, so `--across-families`
+(config `across-families`) changes only the grouping: one group for every target under the
+roots, named `<across families>` in the report. Per-family `skip` still applies, because it is
+decided before the grouping.
+
+Measured (`scripts/bench.sh`, `WITH_ACROSS=1`, which adds a second **independent clone** of the
+repository — its own `.git`, so its own family): a freshly built 351.8 MiB target, already
+deduped inside its own family, gave up another **172.6 MiB** in 1.9 s once it was compared with
+the other family, and neither checkout had a single unit go stale. About half of a new target
+was already on the disk in a project that has nothing to do with it.
+
+Honest about the benchmark: this one ran on `cargo-tare`'s own repository, not on `apps/ketch`,
+because the machine had 10 GiB free and three checkouts of `ketch` do not fit under the script's
+free-space guard. The ratio is what the number is good for; the absolute sizes are an order of
+magnitude smaller than the other benchmarks in `docs/bench.md`.
+
+It stays opt-in, and the reason is in the same numbers: the run holds every target's build locks
+for its whole length, which on the 587-crate workspace is over a minute of no builds anywhere.
+
+Tests (`tests/across_families.rs`): the A/B with two real fixtures in temp dirs of their own —
+neither has a repository, so each is its own family — each holding the same planted artifact,
+with the flag as the only difference. With it the second copy's inode is replaced (a clone is a
+new inode sharing the old one's blocks, which is what an inode check has to assert) while its
+bytes and its mtime are not; without it nothing moves; and all four builds are still fresh
+afterwards. A second test checks the report names one group instead of two.
+
