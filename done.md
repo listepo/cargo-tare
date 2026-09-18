@@ -309,7 +309,7 @@ On a real mid-size workspace, `hyperfine`, clean and incremental builds: baselin
 dedupe vs fused vs seeded worktree vs shared `build-dir` vs sccache. Done: `docs/bench.md` with
 numbers and the defaults (`min-age`, `min-size`) justified by them. Needs free disk space.
 
-Execution plan: benchmark a **copy** of `apps/ketch` (creator's choice) — `git archive`/`rsync`
+Execution plan: benchmark a **copy** of a private 587-crate workspace (creator's choice) — `git archive`/`rsync`
 of the sources into a temp dir, a fresh `target/` built there; the tool never sees a real target.
 Enabling flags first, because the defaults make a benchmark impossible: everything just built is
 younger than `min-age`, so `run` would skip it, and the passes cannot be told apart. Add to
@@ -334,7 +334,7 @@ benchmark impossible: `--pass <NAME>` (repeatable), `--min-age <SECS>`, `--min-s
 `evict::NAME`. Tests: `tests/cli.rs` covers an unknown `--pass` name, a run limited to one pass,
 and both floors; the fake-target helper moved to `tests/common/mod.rs`. `just check` green.
 
-Numbers (`docs/bench.md`, `apps/ketch`, 587 crates, two checkouts, two full runs): compress
+Numbers (`docs/bench.md`, that workspace, 587 crates, two checkouts, two full runs): compress
 takes the two targets from 3.63 GiB to 1.32 GiB in 81.7 s; dedupe frees another 407 MiB in
 12.4 s — together a 74% cut of freshly built targets no age-based cleaner would touch. After
 each pass cargo reported **0** units out of date. Incremental builds: baseline 3.70 s mean
@@ -737,8 +737,8 @@ deduped inside its own family, gave up another **172.6 MiB** in 1.9 s once it wa
 the other family, and neither checkout had a single unit go stale. About half of a new target
 was already on the disk in a project that has nothing to do with it.
 
-Honest about the benchmark: this one ran on `cargo-tare`'s own repository, not on `apps/ketch`,
-because the machine had 10 GiB free and three checkouts of `ketch` do not fit under the script's
+Honest about the benchmark: this one ran on `cargo-tare`'s own repository, not on the bigger workspace,
+because the machine had 10 GiB free and three checkouts of it do not fit under the script's
 free-space guard. The ratio is what the number is good for; the absolute sizes are an order of
 magnitude smaller than the other benchmarks in `docs/bench.md`.
 

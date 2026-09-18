@@ -21,7 +21,7 @@ caught these dirs; nothing existing detects them as orphaned worktrees.
   `~/.cargo/git` (618 MB here). It never touches `target/`. It is also unmaintained (last
   release 2022-09).
 - The problem on this machine is **not stale artifacts**, it is **many live copies**:
-  44 target dirs / ~158 GB under `~/GitHub`, 30 of them git worktrees of one repo (`rtok`),
+  44 target dirs / ~158 GB under one checkout root, 30 of them git worktrees of a single repo,
   all built today. Age-based cleaners (`cargo-sweep --time`, `cargo-clean-all --keep-days`)
   find ~50 MB of 14 GB.
 - Biggest lever measured: **transparent filesystem compression** (deps compress to ~20% of
@@ -39,7 +39,7 @@ caught these dirs; nothing existing detects them as orphaned worktrees.
 | Fact | Value |
 | --- | --- |
 | Disk | 926 GiB, 100% used, 1.1–3.6 GiB free during the session |
-| Cargo target dirs under `~/GitHub` | 44 dirs, ~158 GB |
+| Cargo target dirs under the checkout root | 44 dirs, ~158 GB |
 | of which worktrees of `rtok` with a `target/` | 30 |
 | Largest | `rtok/.claude/worktrees/graph-perf` 17.7 GB, `rtok-gate-sep` 13.9 GB, `rtok` 11–14.8 GB |
 | Last built | every target dir: today → no idle dirs to drop by age |

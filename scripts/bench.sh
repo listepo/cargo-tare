@@ -35,7 +35,10 @@ RESULTS=$WORK/results.tsv
 : >"$RESULTS"
 INDEX=$WORK/hashes.bin
 # The copies carry the workspace's own mise config, and they live outside the trusted tree.
-export MISE_TRUSTED_CONFIG_PATHS=/Users/listepo/GitHub/listepo:$WORK
+# mise refuses an untrusted config, and a benchmark must not depend on one machine's paths:
+# trust this checkout and the work dir the script made itself.
+REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+export MISE_TRUSTED_CONFIG_PATHS=$REPO_ROOT:$WORK
 
 say() { printf '\n=== %s\n' "$*"; }
 record() { printf '%s\t%s\n' "$1" "$2" >>"$RESULTS"; echo "    $1 = $2"; }

@@ -8,7 +8,7 @@ sizes and the same freshness result, and is quoted where the two disagree. The r
 ## How to reproduce
 
 ```
-scripts/bench.sh ~/GitHub/listepo/apps/ketch          # RUNS=5 WITH_SCCACHE=1 by default
+scripts/bench.sh ~/code/your-workspace                # RUNS=5 WITH_SCCACHE=1 by default
 scripts/bench-cargo-home.sh                           # the cargo home, on a clone of it
 ```
 
@@ -30,7 +30,7 @@ sharing. For dedupe, only the free-space delta is the truth.
 
 ## The workspace
 
-`apps/ketch`: 587 crates in the lock file, two checkouts of one family. Apple Silicon, APFS,
+A private workspace: 587 crates in the lock file, two checkouts of one family. Apple Silicon, APFS,
 stable Rust 1.98, nothing else running.
 
 | | checkout `a` | checkout `b` |
@@ -127,8 +127,8 @@ them up — but a `run` that loops until it stops finding work would finish the 
 the repository, not another worktree: its own `.git`, so its own family, holding the same
 dependencies built the same way — two unrelated projects, as far as the tool is concerned.
 
-This part was measured on **`cargo-tare` itself** rather than on `apps/ketch`: the machine had
-10 GiB free at the time and three checkouts of `ketch` do not fit under the script's own
+This part was measured on **`cargo-tare` itself** rather than on that workspace: the machine had
+10 GiB free at the time and three checkouts of it do not fit under the script's own
 free-space guard. The targets are therefore an order of magnitude smaller, and only the ratio is
 worth reading.
 
@@ -206,5 +206,5 @@ compilation off. The two are complementary, and nothing in `cargo-tare` conflict
 - **Seeded worktree** — `cargo tare seed` does not exist yet (T8).
 - **Shared `build-dir`** — cargo's `build.build-dir` is nightly-only (`-Z build-dir`); this
   machine builds on stable, where the key is ignored. T12's `advise` reports exactly that.
-- **One workspace, one machine.** Every number above is `apps/ketch` on one Apple Silicon laptop.
+- **One workspace, one machine.** Every number above is that one workspace on one Apple Silicon laptop.
   The compression ratio depends on what the crates emit; the build-time result should not.

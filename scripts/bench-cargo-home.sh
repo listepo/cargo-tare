@@ -25,7 +25,10 @@ mkdir -p "$WORK"
 RESULTS=$WORK/results.tsv
 : >"$RESULTS"
 HOME_COPY=$WORK/cargo-home
-export MISE_TRUSTED_CONFIG_PATHS=/Users/listepo/GitHub/listepo
+# mise refuses an untrusted config, and a benchmark must not depend on one machine's paths:
+# trust this checkout and the work dir the script made itself.
+REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+export MISE_TRUSTED_CONFIG_PATHS=$REPO_ROOT
 
 say() { printf '\n=== %s\n' "$*"; }
 record() { printf '%s\t%s\n' "$1" "$2" >>"$RESULTS"; echo "    $1 = $2"; }

@@ -124,4 +124,4 @@ compressed flag count in deps: 72 of 95
 wt_seed_p after applesauce:  fresh=15 rebuilt=0  seconds=1.58
 second run seconds=.16
 
-=== done. image: /private/tmp/claude-501/-Users-listepo-GitHub-listepo-research/8ae1573c-29c3-45b5-bfea-7dea4f74e1b4/scratchpad/tare-spike.sparseimage (1492948 KB on host). Detach: hdiutil detach /Volumes/TareSpike
+=== done. image: $SCRATCH/tare-spike.sparseimage (1492948 KB on host). Detach: hdiutil detach /Volumes/TareSpike
