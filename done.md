@@ -653,3 +653,51 @@ crates left alone, a held `.package-cache` giving exit 2 with nothing touched, a
 reporting the home as its own group with only `compress` in it, `status` measuring the home only
 when asked, and a home without `.package-cache` refused.
 
+### T15. Lossy pass: `orphan-toolchain` report
+
+After a toolchain upgrade the artifacts built by the old rustc stay in the same profile dir
+forever; cargo never revisits them. `cargo-sweep` covers this with `--installed` /
+`--toolchains`, and does it by parsing hashed file names, which this project will not do.
+
+The layout-independent source of truth is cargo's own fingerprint data: every
+`.fingerprint/<unit>/*.json` records the rustc it was built with. First step is a report, not a
+deletion: group the fingerprints by rustc, attribute bytes to each group, and show in `status`
+how much of a target belongs to a rustc that is no longer the current one. Deleting those units
+needs the unit-to-file mapping that only build-dir layout v2 gives (roadmap `R1`), so this task
+ends at the number and an `advise` line. Done: the report is right on a fixture built with two
+toolchains, and says nothing when there is only one.
+
+Plan: `src/toolchains.rs` reads cargo's own fingerprints —
+`<profile>/.fingerprint/<unit>/*.json`, whose `rustc` field is the hash of the compiler that
+built that unit — and groups the units by it, newest first. No file name is parsed: the unit is
+the directory, and the hash is a number cargo wrote. The inventory gets the counts per profile
+(`ProfileInfo::toolchains`) and the target gets the totals plus an estimate of the bytes, which
+is the profile's own size split by the share of units, because mapping a unit to its files needs
+the layout only `R1` gives. `status` prints one line per target when more than one rustc appears,
+`advise` adds the note, and both say nothing when there is only one.
+
+Verify: `tests/toolchains.rs` over the real build fixture — build it, rewrite the `rustc` field
+in half the fingerprints (which is what a toolchain upgrade leaves behind) and check the report
+finds exactly those units, plus a pristine build reporting nothing at all. No A/B test: this task
+adds no pass and changes nothing on disk.
+
+Outcome: done as a report, which is where the card ended on purpose. `src/toolchains.rs` reads
+`<profile>/.fingerprint/<unit>/*.json` and groups the units by the `rustc` hash cargo wrote
+there, newest fingerprint first, so the head is the compiler in use and everything after it is
+what an upgrade left behind. No file name is parsed anywhere: the unit is a directory, the
+compiler is a number. `Target` gained `toolchains`, `stale_units` and `stale_bytes_estimate`;
+`status` prints one line per target when a second compiler appears, `advise` adds a note that
+points at `cargo clean`, and a target built by one rustc — the ordinary case — says nothing.
+
+Honest about the number: the bytes are an estimate, and the field name says so. The profile
+dirs' size is split by the share of the units, because a fingerprint names no artifact and the
+exact map needs cargo's newer build-dir layout (roadmap `R1`). That is also why nothing here
+deletes: `cargo-sweep --installed` can only do it by parsing hashed file names.
+
+Tests: three unit tests over a handmade fingerprint tree (one compiler is no finding, the older
+compiler's units are the stale ones, an unbuilt profile says nothing) and three integration
+tests over the real build fixture, where the second toolchain is simulated the only honest way —
+by rewriting the `rustc` hash in half the fingerprints and dating them back a month, which is
+exactly the state an upgrade leaves. No A/B test: this task adds no pass and changes nothing on
+disk.
+

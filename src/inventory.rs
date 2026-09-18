@@ -52,6 +52,13 @@ pub struct Target {
     pub dedupe_candidate_bytes: u64,
     /// The latest build of any profile, as unix seconds.
     pub last_built_unix: Option<u64>,
+    /// Units per rustc over the profile dirs, the compiler cargo uses here first.
+    pub toolchains: Vec<crate::toolchains::Built>,
+    /// Units left behind by a compiler that is no longer the one in use.
+    pub stale_units: usize,
+    /// What those units cost, estimated: the profile dirs' bytes in the share of the units,
+    /// because which files belong to which unit is not knowable without parsing hashed names.
+    pub stale_bytes_estimate: u64,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -153,6 +160,9 @@ fn inspect(root: &Path) -> io::Result<(Target, HashMap<u64, u64>)> {
         doc_bytes: 0,
         incremental_bytes: 0,
         dedupe_candidate_bytes: 0,
+        toolchains: Vec::new(),
+        stale_units: 0,
+        stale_bytes_estimate: 0,
     };
     let mut sizes: HashMap<u64, u64> = HashMap::new();
     // The whole target, not only the profile dirs: `doc/`, `package/` and `tmp/` weigh too.
@@ -182,6 +192,15 @@ fn inspect(root: &Path) -> io::Result<(Target, HashMap<u64, u64>)> {
         if inode.stamp.size >= DEDUPE_MIN_SIZE {
             *sizes.entry(inode.stamp.size).or_default() += inode.allocated;
         }
+    }
+
+    let dirs: Vec<PathBuf> = target.profiles.iter().map(|p| p.dir.clone()).collect();
+    target.toolchains = crate::toolchains::scan(&dirs);
+    target.stale_units = crate::toolchains::stale(&target.toolchains);
+    let units: usize = target.toolchains.iter().map(|built| built.units).sum();
+    if target.stale_units > 0 {
+        let profile_bytes: u64 = target.profiles.iter().map(|p| p.allocated_bytes).sum();
+        target.stale_bytes_estimate = profile_bytes * target.stale_units as u64 / units as u64;
     }
     Ok((target, sizes))
 }

@@ -7,7 +7,6 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
-| T15 | todo | P2 | 3 | 0% | |
 | T18 | todo | P3 | 3 | 0% | |
 
 Blockers: none. Everything is free to start: the engine (`src/engine.rs`), the inode model
@@ -15,20 +14,6 @@ Blockers: none. Everything is free to start: the engine (`src/engine.rs`), the i
 (`src/index.rs`) and the test harness with the freshness oracle (`tests/common/mod.rs`) exist.
 T13–T18 were added from the competitor review in `docs/research.md`; each card says which tool
 does the same thing today.
-
-### T15. Lossy pass: `orphan-toolchain` report
-
-After a toolchain upgrade the artifacts built by the old rustc stay in the same profile dir
-forever; cargo never revisits them. `cargo-sweep` covers this with `--installed` /
-`--toolchains`, and does it by parsing hashed file names, which this project will not do.
-
-The layout-independent source of truth is cargo's own fingerprint data: every
-`.fingerprint/<unit>/*.json` records the rustc it was built with. First step is a report, not a
-deletion: group the fingerprints by rustc, attribute bytes to each group, and show in `status`
-how much of a target belongs to a rustc that is no longer the current one. Deleting those units
-needs the unit-to-file mapping that only build-dir layout v2 gives (roadmap `R1`), so this task
-ends at the number and an `advise` line. Done: the report is right on a fixture built with two
-toolchains, and says nothing when there is only one.
 
 ### T18. Dedupe across families
 

@@ -120,6 +120,12 @@ shell. One profile with a build running, or one built since the run started look
 target dir and the free profiles are evicted on their own. Only `target/` is ever removed; the
 sources next to it are not.
 
+`status` and `advise` also report what a toolchain upgrade left behind: cargo records the
+compiler that built each unit in its own fingerprints, so units whose rustc is no longer the one
+in use are countable without parsing a single hashed file name. The bytes are an estimate — the
+profile's size in the share of those units — because a fingerprint does not name the files it
+produced. Nothing removes them: `cargo clean`, or a rebuild, is the only cure today.
+
 `--cargo-home [DIR]` adds the cargo home to the run as a group of its own: the extracted
 registry sources (`registry/src`) and git checkouts (`git/checkouts`) are compressed like any
 other stable artifact. Without a value the flag resolves `CARGO_HOME`, else `~/.cargo`. Only

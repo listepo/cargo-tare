@@ -236,6 +236,15 @@ fn status(json: bool, home: Option<PathBuf>, mut roots: Vec<PathBuf>) -> Result<
             gib(target.allocated_bytes),
             target.root.display()
         );
+        if target.stale_units > 0 {
+            let units: usize = target.toolchains.iter().map(|built| built.units).sum();
+            println!(
+                "  {:>11}  {} of {units} units built by an older rustc ({} toolchains)",
+                format!("~{}", gib(target.stale_bytes_estimate)),
+                target.stale_units,
+                target.toolchains.len()
+            );
+        }
     }
     let sum = |field: fn(&Target) -> u64| inventory.targets.iter().map(field).sum::<u64>();
     println!(

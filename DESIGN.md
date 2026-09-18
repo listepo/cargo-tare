@@ -450,6 +450,24 @@ target is busy. That is the same guard `orphans` and whole-target eviction use, 
 The size comes from the inventory (`Target::doc_bytes`), since the engine itself scans only
 profile dirs. The build oracle is untouched by it: after the pass cargo reports nothing stale.
 
+## Toolchain report (`src/toolchains.rs`)
+
+A toolchain upgrade does not clean up after itself: cargo compiles every unit again under new
+hashes and never looks at what the old rustc produced. `cargo-sweep --installed` finds those by
+parsing hashed file names; this reads cargo's own fingerprints instead —
+`<profile>/.fingerprint/<unit>/*.json`, whose `rustc` field is cargo's hash of the compiler it
+used. The unit is a directory and the compiler is a number cargo wrote, so no name is parsed.
+
+The groups are sorted by their newest fingerprint, which makes the head the compiler in use and
+everything after it stale. Bytes are an **estimate**, and say so in the field name
+(`stale_bytes_estimate`): the profile dirs' size in the share of the units. An exact number needs
+the unit-to-file map that only cargo's newer build-dir layout gives (roadmap `R1`), and a
+fingerprint names no artifact.
+
+This is why the task stops at a report: nothing can be deleted safely without that map, so
+`status` prints a line per target and `advise` adds a note pointing at `cargo clean`. A target
+built by one rustc — the ordinary case — reports nothing at all.
+
 ## Cargo home (`src/cargo_home.rs`)
 
 The registry sources are the one big pile of compressible text outside the targets: every crate

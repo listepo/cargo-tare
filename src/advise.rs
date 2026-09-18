@@ -200,6 +200,19 @@ pub fn notes(targets: &[Target]) -> Vec<Note> {
             }
         }
     }
+    // What a toolchain upgrade leaves behind: cargo compiles the units again under new hashes
+    // and never looks at the old ones. Nothing here removes them, so this is advice, not a pass.
+    for target in targets.iter().filter(|target| target.stale_units > 0) {
+        let units: usize = target.toolchains.iter().map(|built| built.units).sum();
+        add(
+            target.root.display().to_string(),
+            format!(
+                "{} of {units} units were built by a rustc that is no longer the one cargo uses                  here, about {:.1} GiB: nothing reclaims them short of `cargo clean`, because                  finding a unit's files means parsing hashed file names, which this tool does                  not do",
+                target.stale_units,
+                target.stale_bytes_estimate as f64 / GIB as f64
+            ),
+        );
+    }
     let orphaned: Vec<&Target> = targets.iter().filter(|target| target.orphaned).collect();
     if !orphaned.is_empty() {
         let bytes: u64 = orphaned.iter().map(|target| target.allocated_bytes).sum();
