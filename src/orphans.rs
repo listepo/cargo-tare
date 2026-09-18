@@ -50,6 +50,7 @@ impl Pass for Orphans {
             // a worktree re-registered since the inventory keeps everything it built.
             .filter(|orphan| inside(&orphan.target) && inventory::is_orphaned(&orphan.target))
             .map(|orphan| Action::RemoveTarget {
+                target: orphan.target.clone(),
                 dir: orphan.target.clone(),
                 reason: REASON.to_string(),
                 bytes: orphan.allocated_bytes,

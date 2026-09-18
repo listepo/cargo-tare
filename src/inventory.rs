@@ -44,6 +44,8 @@ pub struct Target {
     pub compressed_bytes: u64,
     /// Allocated bytes of files the compress pass would still look at.
     pub compressible_bytes: u64,
+    /// Allocated bytes of `doc/`, which `cargo doc` writes again from scratch.
+    pub doc_bytes: u64,
     /// Allocated bytes of the profiles' `incremental/` dirs, which no build needs to keep.
     pub incremental_bytes: u64,
     /// Upper bound for dedupe: bytes of files whose size also occurs in a sibling target.
@@ -142,6 +144,7 @@ fn inspect(root: &Path) -> io::Result<(Target, HashMap<u64, u64>)> {
         allocated_bytes: 0,
         compressed_bytes: 0,
         compressible_bytes: 0,
+        doc_bytes: 0,
         incremental_bytes: 0,
         dedupe_candidate_bytes: 0,
     };
@@ -152,6 +155,9 @@ fn inspect(root: &Path) -> io::Result<(Target, HashMap<u64, u64>)> {
         target.paths += inode.paths.len();
         target.logical_bytes += inode.stamp.size;
         target.allocated_bytes += inode.allocated;
+        if inode.paths[0].starts_with(root.join(crate::doc::DIR)) {
+            target.doc_bytes += inode.allocated;
+        }
         let holder = target
             .profiles
             .iter_mut()

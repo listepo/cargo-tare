@@ -72,8 +72,8 @@ Only dirs carrying cargo's own `CACHEDIR.TAG` count as targets. `--lossy` enable
 pass that deletes rebuildable data; lossless passes need no flag. How the engine keeps a target
 safe is described in `DESIGN.md`, "Engine" and "Safety invariants".
 
-`--pass <PASS>` runs only the passes you name (`orphans`, `evict`, `incremental`, `compress`,
-`dedupe`), which
+`--pass <PASS>` runs only the passes you name (`orphans`, `evict`, `incremental`, `doc`,
+`compress`, `dedupe`), which
 is how the benchmarks tell them apart. `--min-age` and `--min-size` move the two floors below;
 they exist for measurements, and the defaults are what `docs/bench.md` justifies.
 
@@ -99,6 +99,11 @@ test suite measures it against an empty target rather than assuming it.
 for N days. Cargo writes that cache for workspace members only, and it is not part of a
 fingerprint: right after the pass nothing is stale at all, and the cost is one non-incremental
 rebuild the next time you edit a crate in that workspace.
+
+**doc** deletes, so it is off unless you name it: `--lossy doc` removes `<target>/doc`, the
+rustdoc output `cargo doc` writes again from scratch and no build reads — `cargo clean --doc` by
+another name. It goes only while this tool holds the target's build locks and nothing in the
+target is being built, and its size is reported like every other removal.
 
 **evict** deletes, so it is off unless you name it: `--lossy evict` plus `--evict-idle-days <N>`
 (profile dirs such as `target/debug` with no build for N days), `--evict-max-total-gib <N>`

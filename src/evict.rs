@@ -166,6 +166,7 @@ impl Pass for Evict {
         for whole in &self.whole {
             if whole.profiles.iter().all(evictable) {
                 actions.push(Action::RemoveTarget {
+                    target: whole.target.clone(),
                     dir: whole.target.clone(),
                     reason: whole.reason.clone(),
                     bytes: whole.bytes,

@@ -9,7 +9,6 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | --- | --- | --- | --- | --- | --- |
 | T14 | todo | P1 | 3 | 0% | |
 | T15 | todo | P2 | 3 | 0% | |
-| T16 | todo | P2 | 1 | 0% | |
 | T18 | todo | P3 | 3 | 0% | |
 
 Blockers: none. Everything is free to start: the engine (`src/engine.rs`), the inode model
@@ -46,15 +45,6 @@ how much of a target belongs to a rustc that is no longer the current one. Delet
 needs the unit-to-file mapping that only build-dir layout v2 gives (roadmap `R1`), so this task
 ends at the number and an `advise` line. Done: the report is right on a fixture built with two
 toolchains, and says nothing when there is only one.
-
-### T16. Lossy pass: `doc`
-
-`target/doc` is fully regenerable by `cargo doc` and is usually tens to hundreds of MB.
-`cargo clean --doc` does exactly this, and `kondo` / `cargo-clean-all` get it only by deleting
-the whole target. A one-directory pass: `--lossy doc`, remove `<target>/doc` whole, reported
-with its size like every other removal. Smallest task in the list and pure profit for anyone who
-ever ran `cargo doc` once. Done: a test builds docs in the fixture, the pass removes them, the
-build oracle stays green (docs are not part of the build graph).
 
 ### T18. Dedupe across families
 

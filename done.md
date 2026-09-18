@@ -1,5 +1,28 @@
 # Done
 
+### T16. Lossy pass: `doc`
+
+`target/doc` is fully regenerable by `cargo doc` and is usually tens to hundreds of MB.
+`cargo clean --doc` does exactly this, and `kondo` / `cargo-clean-all` get it only by deleting
+the whole target. A one-directory pass: `--lossy doc`, remove `<target>/doc` whole, reported
+with its size like every other removal. Smallest task in the list and pure profit for anyone who
+ever ran `cargo doc` once. Done: a test builds docs in the fixture, the pass removes them, the
+build oracle stays green (docs are not part of the build graph).
+
+Outcome: `src/doc.rs` plans one removal per target that has a `doc/` dir, gated by `--lossy doc`
+and placed after `incremental` in the pipeline. Because `doc/` lies beside the profile dirs
+rather than inside one, `Action::RemoveTarget` now names the guarding `target` and the `dir` to
+remove separately; `orphans` and whole-target eviction pass the same path for both, and the
+engine's guard is unchanged in what it allows them. The size comes from a new
+`Target::doc_bytes`, summed in the scan the inventory already does.
+
+Tests: `tests/doc.rs` on the real fixture with `cargo doc --no-deps` run into it — the A/B
+`ab_only_the_named_run_removes_the_docs` (same built fixture twice, `--lossy doc` the only
+difference; both sides then pass the freshness oracle, so docs really are outside the build
+graph), a dry run that reports the dir with its measured size in JSON and removes nothing, and a
+target with a held `.cargo-lock` that keeps its docs and exits 2. Docs: DESIGN.md "Doc pass" plus
+the pipeline table, README.
+
 ### T12. `advise` and automation recipes
 
 `cargo tare advise` reads the configs that decide how big a target grows and says what to change.

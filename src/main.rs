@@ -9,6 +9,7 @@ use cargo_tare::advise::{self, Kind};
 use cargo_tare::compress::{self, Compress};
 use cargo_tare::config::{self, Config};
 use cargo_tare::dedupe::{self, Dedupe};
+use cargo_tare::doc::{self, Doc, Docs};
 use cargo_tare::engine::{self, Options, Pass};
 use cargo_tare::evict::{self, Evict, Limits};
 use cargo_tare::incremental::{self, Incremental};
@@ -24,12 +25,13 @@ const BYTES_PER_GIB: f64 = (1u64 << 30) as f64;
 /// Exit code when a profile dir was skipped because a build holds its lock.
 const BUSY_EXIT: u8 = 2;
 /// Every pass that deletes rebuildable data; `--lossy` takes these names.
-const LOSSY_PASSES: [&str; 3] = [orphans::NAME, evict::NAME, incremental::NAME];
+const LOSSY_PASSES: [&str; 4] = [orphans::NAME, evict::NAME, incremental::NAME, doc::NAME];
 /// Every pass, in pipeline order; `--pass` takes these names.
-const PASSES: [&str; 5] = [
+const PASSES: [&str; 6] = [
     orphans::NAME,
     evict::NAME,
     incremental::NAME,
+    doc::NAME,
     compress::NAME,
     dedupe::NAME,
 ];
@@ -492,8 +494,20 @@ fn run(args: RunArgs) -> Result<Done> {
             })
             .collect(),
     );
-    // Pipeline order (`DESIGN.md`): orphans, evict, incremental, compress, dedupe.
-    let all: [&dyn Pass; 5] = [&orphans, &evict, &incremental, &compress, &dedupe];
+    // `cargo doc` writes this dir again from scratch and no build reads it.
+    let docs = Doc::new(
+        inventory
+            .targets
+            .iter()
+            .filter(|target| target.doc_bytes > 0)
+            .map(|target| Docs {
+                target: target.root.clone(),
+                allocated_bytes: target.doc_bytes,
+            })
+            .collect(),
+    );
+    // Pipeline order (`DESIGN.md`): orphans, evict, incremental, doc, compress, dedupe.
+    let all: [&dyn Pass; 6] = [&orphans, &evict, &incremental, &docs, &compress, &dedupe];
     let passes: Vec<&dyn Pass> = all
         .into_iter()
         .filter(|pass| args.pass.is_empty() || args.pass.iter().any(|name| name == pass.name()))

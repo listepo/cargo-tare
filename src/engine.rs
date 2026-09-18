@@ -38,10 +38,13 @@ pub enum Action {
         dir: PathBuf,
         reason: String,
     },
-    /// Lossy: delete a whole target dir, `doc/` and `CACHEDIR.TAG` included. Applied only when
-    /// a profile dir we hold the lock for is inside it and no dir reported busy is. `bytes` is
-    /// the caller's own measurement of the dir, because the engine only scans profile dirs.
+    /// Lossy: delete `dir`, which lies inside `target` but outside its profile dirs — the whole
+    /// target itself (`doc/` and `CACHEDIR.TAG` included) or something beside them, such as
+    /// `doc/` alone. Applied only when a profile dir we hold the lock for is inside `target` and
+    /// no dir reported busy is: what guards such a removal is the target's own build locks.
+    /// `bytes` is the caller's own measurement, because the engine only scans profile dirs.
     RemoveTarget {
+        target: PathBuf,
         dir: PathBuf,
         reason: String,
         bytes: u64,
@@ -221,7 +224,9 @@ pub fn run(profile_dirs: &[PathBuf], passes: &[&dyn Pass], opts: &Options) -> io
                         .map(|inode| inode.allocated)
                         .sum()
                 }
-                Action::RemoveTarget { dir, reason, bytes } => {
+                Action::RemoveTarget {
+                    dir, reason, bytes, ..
+                } => {
                     pass_report.removals.push((dir.clone(), reason.clone()));
                     *bytes
                 }
@@ -239,18 +244,14 @@ pub fn run(profile_dirs: &[PathBuf], passes: &[&dyn Pass], opts: &Options) -> io
                     let unlocked = !locked.iter().any(|held| dir.starts_with(held));
                     remove(dir, unlocked, bytes, &mut locked, &mut pass_report);
                 }
-                Action::RemoveTarget { dir, .. } => {
+                Action::RemoveTarget { target, dir, .. } => {
                     removal_tried = true;
-                    // Ours only if we hold a lock inside it and nothing inside it is being built.
-                    let holds_lock = locked.iter().any(|held| held.starts_with(&dir));
-                    let building = report.busy.iter().any(|busy| busy.starts_with(&dir));
-                    remove(
-                        dir,
-                        !holds_lock || building,
-                        bytes,
-                        &mut locked,
-                        &mut pass_report,
-                    );
+                    // Ours only if the target holds still: we have a lock inside it, nothing in
+                    // it is being built, and what goes is inside it.
+                    let holds_lock = locked.iter().any(|held| held.starts_with(&target));
+                    let building = report.busy.iter().any(|busy| busy.starts_with(&target));
+                    let unlocked = !holds_lock || building || !dir.starts_with(&target);
+                    remove(dir, unlocked, bytes, &mut locked, &mut pass_report);
                 }
                 Action::Replace(replace) => match apply_replace(&replace, &locked) {
                     None => {

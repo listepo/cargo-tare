@@ -62,9 +62,10 @@ every choice are in `docs/research.md`.
 | 1 | `orphans` | lossy | targets whose project dir / worktree is gone or whose branch is merged |
 | 2 | `evict` | lossy | whole profile dirs idle for N days; least-recently-built first until under a global size cap |
 | 3 | `incremental` | lossy | the `incremental/` cache of profile dirs idle for N days |
-| 4 | `prune` | lossy | roadmap: units the current build graph no longer references |
-| 5 | `dedupe` + `compress` (fused) | lossless | see below |
-| 6 | `report` | — | bytes before / after per pass, per target, JSON or table |
+| 4 | `doc` | lossy | `<target>/doc`, what `cargo doc` writes and no build reads |
+| 5 | `prune` | lossy | roadmap: units the current build graph no longer references |
+| 6 | `dedupe` + `compress` (fused) | lossless | see below |
+| 7 | `report` | — | bytes before / after per pass, per target, JSON or table |
 
 Ordering rule: delete first so lossless passes never hash or compress bytes that are about to
 disappear; lossless passes last so they see the final set of inodes.
@@ -435,6 +436,19 @@ as stable. Numbers quoted in the advice are the measured ones in `docs/research.
 Out of scope on purpose: `cargo-hakari` and `sccache` help with rebuild time, not with the size
 of a live target, and nothing in a file says whether a workspace wants them — they stay in
 `docs/research.md` rather than in the output.
+
+## Doc pass (`src/doc.rs`)
+
+Lossy, so it runs only with `--lossy doc`, and the smallest pass there is: `<target>/doc` is what
+`cargo doc` writes from scratch and no build reads, which is why `cargo clean --doc` exists.
+
+`doc/` sits beside the profile dirs rather than inside one, so the lock that guards it is the
+target's own: the pass plans `Action::RemoveTarget { target, dir }` with `dir` the `doc/` dir, and
+the engine applies it only while it holds a profile lock inside that target and nothing in the
+target is busy. That is the same guard `orphans` and whole-target eviction use, which is why
+`RemoveTarget` names the target and the dir separately instead of assuming they are the same.
+The size comes from the inventory (`Target::doc_bytes`), since the engine itself scans only
+profile dirs. The build oracle is untouched by it: after the pass cargo reports nothing stale.
 
 ## CLI surface
 
