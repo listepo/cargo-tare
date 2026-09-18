@@ -5,7 +5,6 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Command as Process, Stdio};
 
-use assert_cmd::Command;
 use cargo_tare::engine::{self, Options, Pass, Report};
 use cargo_tare::inventory;
 use cargo_tare::model::CARGO_LOCK_FILE;
@@ -14,7 +13,7 @@ use predicates::str::contains;
 use tempfile::TempDir;
 
 mod common;
-use common::{allocated_bytes, fake_target, run_unbusy};
+use common::{allocated_bytes, fake_target, run_unbusy, tare as tare_in};
 
 const KIB: usize = 1024;
 const PROFILE_KIB: usize = 64;
@@ -241,8 +240,8 @@ fn cli_removes_an_orphan_only_when_asked() {
     orphan(&root);
     let index = root.join("index.bin");
     let tare = || {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cargo-tare"));
-        cmd.args(["tare", "run", "--pass", "orphans", "--index"]);
+        let mut cmd = tare_in(&root);
+        cmd.args(["run", "--pass", "orphans", "--index"]);
         cmd.arg(&index);
         cmd
     };

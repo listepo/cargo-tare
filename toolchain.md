@@ -25,7 +25,8 @@ too slow, see `DESIGN.md`).
 | applesauce | local | https://github.com/Dr-Emann/applesauce | Backend of the compress pass: transparent APFS compression |
 | rayon | local | https://github.com/rayon-rs/rayon | Hash files in parallel |
 | serde | local | https://github.com/serde-rs/serde | Serialize the inventory |
-| serde_json | local | https://github.com/serde-rs/json | `status --json`; cargo's JSON messages in the test oracle |
+| serde_json | local | https://github.com/serde-rs/json | `status --json`, `run --json`; cargo's JSON messages in the test oracle |
+| toml | local | https://github.com/toml-rs/toml | Read `config.toml` |
 | tempfile | local (dev) | https://github.com/Stebalien/tempfile | Throwaway profile dirs and the cargo fixture in tests |
 | trycmd | local (dev) | https://github.com/assert-rs/snapbox | Full CLI output cases in `tests/cmd/` |
 | assert_cmd | local (dev) | https://github.com/assert-rs/assert_cmd | Exit codes of the binary |

@@ -1,5 +1,64 @@
 # Done
 
+### T10. Configuration and reporting
+
+`~/.config/cargo-tare/config.toml` (roots, `min-age`, `min-size`, per-pass switches and thresholds,
+family overrides), flag overrides, table and JSON reports, meaningful exit codes. Done: documented
+in `README.md`, invalid config fails with a precise message. `run` without arguments takes the
+configured roots (today it requires a `<ROOT>`).
+
+Execution plan: `src/config.rs` — a serde `Config` read from
+`$XDG_CONFIG_HOME/cargo-tare/config.toml` (else `$HOME/.config/...`), `deny_unknown_fields` and
+kebab-case keys so a typo stops the run instead of silently doing nothing; keys `roots`,
+`lossy`, `min-age`, `min-size`, `[evict] idle-days / max-total-gib`, `[incremental] idle-days`,
+and `[family."<dir>"] skip` for leaving one repository alone. Only `skip` is per family: the
+evict cap and the idle rules are decided over everything under the roots at once, so they stay
+global — documented, not silently dropped. `--config <FILE>` points at another file (also what
+the tests use); every flag wins over the file; `<ROOT>` becomes optional and falls back to
+`roots`. Reporting: `run --json` prints one document (groups, busy dirs, per-pass counts,
+removals with reasons, skips) built by a `#[derive(Serialize)]` view in `main.rs`, so the engine
+types stay plain. Exit codes: 0 done, 1 error, 2 something was left busy — what a cron job needs
+to tell the difference. Tests: unit tests on parsing and precedence, integration tests for a
+config-driven run, a broken config naming its key, `--json` parsed back with serde_json, and
+exit code 2 on a busy profile. Docs: `README.md` config section with a full example file,
+`DESIGN.md` CLI surface. Verify: `just check`.
+
+Outcome: `src/config.rs` — `Config::load` reads
+`$XDG_CONFIG_HOME/cargo-tare/config.toml` (else `$HOME/.config/...`) with `deny_unknown_fields`
+and kebab-case keys, so a typo names itself and stops the run instead of being ignored; a
+missing file is the defaults, an unreadable or invalid one is an error naming the file. Keys:
+`roots`, `lossy`, `min-age`, `min-size`, `[evict] idle-days / max-total-gib`,
+`[incremental] idle-days`, `[family."<dir>"] skip`. `--config <FILE>` reads another file and
+fails if it is not there. Every flag wins over the file (`Option::or` at each threshold, a
+non-empty `--lossy` replaces the list). `<ROOT>` is now optional for `run` and falls back to
+`roots`, with a precise error when both are empty; `status` takes the same `roots`, keeping `.`
+as its fallback.
+
+`skip` is the only per-family key, and the card's "family overrides" stop there on purpose: the
+`evict` cap and both idle rules are decided over everything under the roots at once, so a
+per-family threshold would be a lie. `indicatif` and `owo-colors` were approved for this task
+and not used — nothing here needs a progress bar or colour yet.
+
+Reporting: `run --json` prints one document (dry-run flag, groups with family, busy dirs, temps
+removed, per-pass counts, every removal with its reason, every skip) from a `Serialize` view in
+`main.rs`, so the engine types stay plain; the table print moved into `print_report`. Exit codes:
+`0` done, `1` failed, `2` a profile dir was left alone because a build held its lock — `main`
+now returns `ExitCode`.
+
+Tests: 3 unit tests in `src/config.rs` (defaults, an unknown key naming itself, every key
+parsed) and `tests/config.rs` with 7 more — the file supplying roots and the lossy pass, a flag
+beating the file, an A/B pair where `skip = true` is the only difference between two identical
+trees, a broken file naming itself and the key, a `--config` file that must exist, the JSON
+report parsed back with `serde_json`, and exit code 2 on a busy profile. Every integration test
+now runs the binary through `common::tare(config_home)`, which points `XDG_CONFIG_HOME` at a
+temp dir: a test must never read the machine's configuration. `tests/cmd/run-needs-a-root.trycmd`
+was dropped for the same reason (its subject is now our own error, and its outcome would depend
+on the machine's config file); the case lives in `tests/cli.rs`. `just check` green.
+
+Known limits: `~` in a config path is not expanded (a shell does it, a file does not); `roots`
+are not de-duplicated; no `[compress]` / `[dedupe]` tables yet, `min-age` / `min-size` set both
+passes at once as the flags do.
+
 ### T13. Lossy pass: `incremental`
 
 Drop `<profile>/incremental/` in profile dirs nobody has built in for N days. Nothing in the

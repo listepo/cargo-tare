@@ -44,7 +44,8 @@ cargo tare status ~/code            # read-only: every target under the root
 cargo tare status --json ~/code
 cargo tare run --dry-run ~/code     # plan only
 cargo tare run ~/code
-cargo tare run [--dry-run] [--pass <PASS>]... [--lossy <PASS>]... [--index <FILE>] <ROOT>...
+cargo tare run [--dry-run] [--pass <PASS>]... [--lossy <PASS>]... [--index <FILE>]
+               [--config <FILE>] [--json] [<ROOT>...]
               [--min-age <SECS>] [--min-size <BYTES>]
 cargo tare run --dry-run --lossy orphans ~/code
 cargo tare run --dry-run --lossy evict --evict-idle-days 30 ~/code
@@ -93,10 +94,41 @@ profile dirs go, only under cargo's lock, never one with a running build or one 
 run started looking. Every removal is printed with its reason; `--dry-run` prints the same list
 and removes nothing. Cargo rebuilds what was removed on the next build of that profile.
 
+`--json` prints the same report as one JSON document instead of the table. Exit codes: `0`
+everything the run planned was done, `1` the run failed (bad flags, bad config, I/O), `2` a
+profile dir was skipped because a build held its lock — what a scheduled run needs to tell
+"nothing to do" from "come back later".
+
+## Configuration
+
+`$XDG_CONFIG_HOME/cargo-tare/config.toml`, or `~/.config/cargo-tare/config.toml`. Every key is
+optional and every flag wins over the file; `--config <FILE>` reads another file instead, and a
+file named there must exist. An unknown key stops the run rather than being ignored.
+
+```toml
+roots = ["~/code"]          # what `run` and `status` search when the command line names none
+lossy = ["orphans"]         # lossy passes to enable, as `--lossy` would; thresholds still apply
+min-age = 3600              # seconds; both lossless passes
+min-size = 8192             # bytes; both lossless passes
+
+[evict]
+idle-days = 30
+max-total-gib = 50
+
+[incremental]
+idle-days = 7
+
+[family."/Users/me/code/monorepo/.git"]
+skip = true                 # never touch this repository and its worktrees
+```
+
+A family is a repository and its worktrees, keyed by the git common dir `status` prints (a target
+without a repository is its own family). `skip` is the only per-family key: the `evict` cap and
+the idle rules are decided over everything under the roots at once, so they stay global.
+
 Planned:
 
 ```
-cargo tare run             # without arguments: every target under the configured roots
 cargo tare seed            # in a fresh worktree: clone a sibling's target
 cargo tare advise          # config findings
 ```

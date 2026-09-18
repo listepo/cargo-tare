@@ -4,7 +4,6 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use assert_cmd::Command;
 use cargo_tare::engine::{self, Options, Report};
 use cargo_tare::evict::{self, Evict, Limits};
 use cargo_tare::inventory;
@@ -13,7 +12,7 @@ use predicates::str::contains;
 use tempfile::TempDir;
 
 mod common;
-use common::{fake_target, run_unbusy};
+use common::{fake_target, run_unbusy, tare as tare_in};
 
 const IDLE_DAYS: u64 = 14;
 const KIB: usize = 1024;
@@ -152,17 +151,12 @@ fn size_cap_removes_the_least_recently_built_first() {
     assert!(newest.join("deps/libx.rlib").exists());
 }
 
-fn tare() -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_cargo-tare"));
-    cmd.arg("tare");
-    cmd
-}
-
 #[test]
 fn cli_evicts_only_when_asked_with_a_limit() {
     let (_tmp, root) = root();
     let old = fake_target(&root, "old", 64, IDLE_DAYS + 1);
     let index = root.join("index.bin");
+    let tare = || tare_in(&root);
 
     tare()
         .args(["run", "--lossy", "evict", "--index"])

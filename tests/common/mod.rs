@@ -163,6 +163,14 @@ impl Fixture {
 
 const ORACLE_BUILDS: [&[&str]; 2] = [&["build"], &["test", "--no-run"]];
 
+/// The binary under test, with a config home of its own: a test must never read, or depend on,
+/// the configuration of the machine it runs on.
+pub fn tare(config_home: &Path) -> assert_cmd::Command {
+    let mut cmd = assert_cmd::Command::new(env!("CARGO_BIN_EXE_cargo-tare"));
+    cmd.arg("tare").env("XDG_CONFIG_HOME", config_home);
+    cmd
+}
+
 /// Bytes on disk under `dir`, every hardlinked inode once.
 pub fn allocated_bytes(dir: &Path) -> u64 {
     let inodes = model::scan(dir).unwrap().inodes;

@@ -1,10 +1,12 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, ensure};
 use cargo_tare::compress::{self, Compress};
+use cargo_tare::config::{self, Config};
 use cargo_tare::dedupe::{self, Dedupe};
 use cargo_tare::engine::{self, Options, Pass};
 use cargo_tare::evict::{self, Evict, Limits};
@@ -17,6 +19,8 @@ use clap::{Parser, Subcommand};
 /// Relative to `$HOME`. The digit follows the index file format.
 const DEFAULT_INDEX: &str = ".cache/cargo-tare/hashes-v1.bin";
 const BYTES_PER_GIB: f64 = (1u64 << 30) as f64;
+/// Exit code when a profile dir was skipped because a build holds its lock.
+const BUSY_EXIT: u8 = 2;
 /// Every pass that deletes rebuildable data; `--lossy` takes these names.
 const LOSSY_PASSES: [&str; 3] = [orphans::NAME, evict::NAME, incremental::NAME];
 /// Every pass, in pipeline order; `--pass` takes these names.
@@ -91,17 +95,38 @@ struct RunArgs {
     /// Content-hash cache [default: ~/.cache/cargo-tare/hashes-v1.bin]
     #[arg(long, value_name = "FILE")]
     index: Option<PathBuf>,
-    /// Dirs to search; a target dir itself works too
-    #[arg(required = true, value_name = "ROOT")]
+    /// Configuration file [default: $XDG_CONFIG_HOME/cargo-tare/config.toml]
+    #[arg(long, value_name = "FILE")]
+    config: Option<PathBuf>,
+    /// Print the report as JSON instead of a table
+    #[arg(long)]
+    json: bool,
+    /// Dirs to search; a target dir itself works too [default: `roots` from the config]
+    #[arg(value_name = "ROOT")]
     roots: Vec<PathBuf>,
 }
 
-fn main() -> Result<()> {
+fn main() -> ExitCode {
     let Cargo::Tare(Tare { cmd }) = Cargo::parse();
-    match cmd {
-        Cmd::Status { json, roots } => status(json, roots),
+    let done = match cmd {
+        Cmd::Status { json, roots } => status(json, roots).map(|()| Done::Everything),
         Cmd::Run(args) => run(args),
+    };
+    match done {
+        Ok(Done::Everything) => ExitCode::SUCCESS,
+        // A cron job wants to tell "nothing to do" from "a build was in the way".
+        Ok(Done::LeftBusy) => ExitCode::from(BUSY_EXIT),
+        Err(error) => {
+            eprintln!("error: {error:#}");
+            ExitCode::FAILURE
+        }
     }
+}
+
+/// What `run` finished with; the difference is visible in the exit code.
+enum Done {
+    Everything,
+    LeftBusy,
 }
 
 /// Canonical, so that families, scanned paths and locked dirs all compare equal.
@@ -121,7 +146,14 @@ fn gib(bytes: u64) -> String {
     format!("{:.2} GiB", bytes as f64 / BYTES_PER_GIB)
 }
 
-fn status(json: bool, roots: Vec<PathBuf>) -> Result<()> {
+fn status(json: bool, mut roots: Vec<PathBuf>) -> Result<()> {
+    if roots.is_empty() {
+        // The same `roots` key `run` uses; `.` stays the fallback when there is none.
+        roots = match config::default_path() {
+            Some(path) => Config::load(&path)?.roots,
+            None => Vec::new(),
+        };
+    }
     let inventory = read_inventory(roots)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&inventory)?);
@@ -169,10 +201,25 @@ fn now_unix() -> u64 {
         .map_or(0, |since_epoch| since_epoch.as_secs())
 }
 
-fn run(args: RunArgs) -> Result<()> {
+fn run(args: RunArgs) -> Result<Done> {
+    let config = match &args.config {
+        // A file the command line names and that is not there is a mistake, not a default.
+        Some(path) => {
+            ensure!(path.exists(), "no config file at {}", path.display());
+            Config::load(path)?
+        }
+        None => match config::default_path() {
+            Some(path) => Config::load(&path)?,
+            None => Config::default(),
+        },
+    };
     let opts = Options {
         dry_run: args.dry_run,
-        lossy: args.lossy,
+        lossy: if args.lossy.is_empty() {
+            config.lossy.clone()
+        } else {
+            args.lossy
+        },
     };
     for name in &opts.lossy {
         ensure!(
@@ -184,9 +231,10 @@ fn run(args: RunArgs) -> Result<()> {
         ensure!(PASSES.contains(&name.as_str()), "unknown pass `{name}`");
     }
     let limits = Limits {
-        idle_days: args.evict_idle_days,
+        idle_days: args.evict_idle_days.or(config.evict.idle_days),
         max_total_bytes: args
             .evict_max_total_gib
+            .or(config.evict.max_total_gib)
             .map(|gib| gib.saturating_mul(1 << 30)),
     };
     let evicting = opts.lossy.iter().any(|name| name == evict::NAME);
@@ -194,9 +242,10 @@ fn run(args: RunArgs) -> Result<()> {
         evicting != (limits == Limits::default()),
         "`--lossy evict` and a limit (--evict-idle-days, --evict-max-total-gib) need each other"
     );
+    let incremental_idle_days = args.incremental_idle_days.or(config.incremental.idle_days);
     let dropping = opts.lossy.iter().any(|name| name == incremental::NAME);
     ensure!(
-        dropping == args.incremental_idle_days.is_some(),
+        dropping == incremental_idle_days.is_some(),
         "`--lossy incremental` and `--incremental-idle-days` need each other"
     );
     let index_path = match args.index {
@@ -208,18 +257,27 @@ fn run(args: RunArgs) -> Result<()> {
     };
     let index = RefCell::new(HashIndex::load(&index_path));
     let (mut compress, mut dedupe) = (Compress::new(&index), Dedupe::new(&index));
-    if let Some(secs) = args.min_age {
+    if let Some(secs) = args.min_age.or(config.min_age) {
         let min_age = Duration::from_secs(secs);
         (compress.min_age, dedupe.min_age) = (min_age, min_age);
     }
-    if let Some(bytes) = args.min_size {
+    if let Some(bytes) = args.min_size.or(config.min_size) {
         (compress.min_size, dedupe.min_size) = (bytes, bytes);
     }
 
     // One engine run per family: its locks block builds only in the targets being compared.
     // ponytail: equal files in unrelated projects (the same registry crates) are not shared;
     // run families together if the benchmarks say it is worth the wider lock.
-    let inventory = read_inventory(args.roots)?;
+    let roots = if args.roots.is_empty() {
+        config.roots.clone()
+    } else {
+        args.roots
+    };
+    ensure!(
+        !roots.is_empty(),
+        "no roots: name them on the command line or set `roots` in the config file"
+    );
+    let inventory = read_inventory(roots)?;
     ensure!(!inventory.targets.is_empty(), "no cargo target dirs found");
     // The size cap is global, so eviction is decided over everything under the roots at once.
     let profiles: Vec<ProfileInfo> = inventory
@@ -229,7 +287,7 @@ fn run(args: RunArgs) -> Result<()> {
         .collect();
     let evict = Evict::new(evict::select(&profiles, now_unix(), limits));
     // Cargo keeps `incremental/` for workspace members only, so this costs one plain rebuild.
-    let idle_days = args.incremental_idle_days.unwrap_or(u64::MAX);
+    let idle_days = incremental_idle_days.unwrap_or(u64::MAX);
     let incremental = Incremental::new(incremental::select(&profiles, now_unix(), idle_days));
     // Whole targets of checkouts git no longer registers; the sources next to them stay.
     let orphans = Orphans::new(
@@ -252,50 +310,146 @@ fn run(args: RunArgs) -> Result<()> {
     let mut groups: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
     for target in inventory.targets {
         let key = target.family.unwrap_or_else(|| target.root.clone());
+        if config.skips(&key) {
+            continue;
+        }
         let dirs = target.profiles.into_iter().map(|profile| profile.dir);
         groups.entry(key).or_default().extend(dirs);
     }
 
+    let mut left_busy = false;
+    let mut reports = Vec::new();
     for (group, profile_dirs) in &groups {
-        println!("{}", group.display());
+        if !args.json {
+            println!("{}", group.display());
+        }
         let report = engine::run(profile_dirs, &passes, &opts)?;
-        for dir in &report.busy {
-            println!("  busy, skipped: {}", dir.display());
-        }
-        if report.temps_removed > 0 {
-            println!("  stale temp files removed: {}", report.temps_removed);
-        }
-        for pass in &report.passes {
-            println!(
-                "  {}: planned {} ({} bytes), applied {} ({} bytes), skipped {}",
-                pass.name,
-                pass.planned,
-                pass.planned_bytes,
-                pass.applied,
-                pass.freed_bytes,
-                pass.skipped.len()
-            );
-            let verb = if opts.dry_run {
-                "would remove"
-            } else {
-                "remove"
-            };
-            for (dir, reason) in &pass.removals {
-                println!("    {verb} {}: {reason}", dir.display());
-            }
-            for (path, skip) in &pass.skipped {
-                println!("    skipped {}: {skip:?}", path.display());
-            }
+        left_busy |= !report.busy.is_empty();
+        if args.json {
+            reports.push((group.as_path(), report));
+        } else {
+            print_report(&report, opts.dry_run);
         }
     }
-    for note in compress.notes() {
-        println!("compress backend: {note}");
+    if args.json {
+        let json = JsonReport {
+            dry_run: opts.dry_run,
+            groups: reports
+                .iter()
+                .map(|(group, report)| JsonGroup::new(group, report))
+                .collect(),
+            compress_notes: compress.notes(),
+            files_hashed: dedupe.hashed(),
+        };
+        println!("{}", serde_json::to_string_pretty(&json)?);
+    } else {
+        for note in compress.notes() {
+            println!("compress backend: {note}");
+        }
+        println!("files hashed: {}", dedupe.hashed());
     }
-    println!("files hashed: {}", dedupe.hashed());
     // The index only caches hashes of files as they are, so it is worth keeping on a dry run too.
     index
         .borrow()
         .save(&index_path)
         .with_context(|| format!("saving {}", index_path.display()))?;
-    Ok(())
+    Ok(if left_busy {
+        Done::LeftBusy
+    } else {
+        Done::Everything
+    })
+}
+
+fn print_report(report: &engine::Report, dry_run: bool) {
+    for dir in &report.busy {
+        println!("  busy, skipped: {}", dir.display());
+    }
+    if report.temps_removed > 0 {
+        println!("  stale temp files removed: {}", report.temps_removed);
+    }
+    for pass in &report.passes {
+        println!(
+            "  {}: planned {} ({} bytes), applied {} ({} bytes), skipped {}",
+            pass.name,
+            pass.planned,
+            pass.planned_bytes,
+            pass.applied,
+            pass.freed_bytes,
+            pass.skipped.len()
+        );
+        let verb = if dry_run { "would remove" } else { "remove" };
+        for (dir, reason) in &pass.removals {
+            println!("    {verb} {}: {reason}", dir.display());
+        }
+        for (path, skip) in &pass.skipped {
+            println!("    skipped {}: {skip:?}", path.display());
+        }
+    }
+}
+
+/// `--json`: the same report as the table, for a script that has to act on it.
+#[derive(serde::Serialize)]
+struct JsonReport<'a> {
+    dry_run: bool,
+    groups: Vec<JsonGroup<'a>>,
+    compress_notes: Vec<String>,
+    files_hashed: usize,
+}
+
+#[derive(serde::Serialize)]
+struct JsonGroup<'a> {
+    family: &'a Path,
+    busy: &'a [PathBuf],
+    temps_removed: usize,
+    passes: Vec<JsonPass<'a>>,
+}
+
+impl<'a> JsonGroup<'a> {
+    fn new(family: &'a Path, report: &'a engine::Report) -> Self {
+        Self {
+            family,
+            busy: &report.busy,
+            temps_removed: report.temps_removed,
+            passes: report.passes.iter().map(JsonPass::new).collect(),
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+struct JsonPass<'a> {
+    name: &'a str,
+    planned: usize,
+    planned_bytes: u64,
+    applied: usize,
+    freed_bytes: u64,
+    removals: Vec<JsonNote<'a>>,
+    skipped: Vec<JsonNote<'a>>,
+}
+
+impl<'a> JsonPass<'a> {
+    fn new(pass: &'a engine::PassReport) -> Self {
+        let removals = pass.removals.iter().map(|(path, reason)| JsonNote {
+            path,
+            reason: reason.clone(),
+        });
+        let skipped = pass.skipped.iter().map(|(path, skip)| JsonNote {
+            path,
+            reason: format!("{skip:?}"),
+        });
+        Self {
+            name: pass.name,
+            planned: pass.planned,
+            planned_bytes: pass.planned_bytes,
+            applied: pass.applied,
+            freed_bytes: pass.freed_bytes,
+            removals: removals.collect(),
+            skipped: skipped.collect(),
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+struct JsonNote<'a> {
+    path: &'a Path,
+    reason: String,
 }

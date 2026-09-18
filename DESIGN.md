@@ -377,7 +377,8 @@ equal files in unrelated projects are not shared.
 
 ```
 cargo tare status [--json] [ROOT]...  # inventory, families, potential savings; read-only
-cargo tare run [--dry-run] [--lossy <PASS>]... [--index <FILE>] <ROOT>...
+cargo tare run [--dry-run] [--lossy <PASS>]... [--index <FILE>] [<ROOT>]...
+               [--config <FILE>] [--json]          # file: see below; json: the report as data
                [--evict-idle-days <N>] [--evict-max-total-gib <N>]   # with --lossy evict
                [--incremental-idle-days <N>]        # with --lossy incremental
                                                     # --lossy orphans: no threshold
@@ -386,8 +387,16 @@ cargo tare seed [--from <dir>] [<dir>]# clone-seed a worktree's target
 cargo tare advise                     # config findings: ignored [unstable] keys, build-dir hints
 ```
 
-Config: `~/.config/cargo-tare/config.toml` — `roots`, `min-age`, `min-size`, per-pass enable and
-thresholds (`evict.idle-days`, `evict.max-total`), family overrides.
+Config (`src/config.rs`): `$XDG_CONFIG_HOME/cargo-tare/config.toml`, else
+`~/.config/cargo-tare/config.toml` — `roots`, `lossy`, `min-age`, `min-size`,
+`[evict] idle-days / max-total-gib`, `[incremental] idle-days`, `[family."<dir>"] skip`. Keys are
+kebab-case and unknown ones are an error: a typo that silently does nothing is worse than a stop.
+A flag always wins over the file, and a file named with `--config` must exist. Only `skip` is per
+family, because the other thresholds are decided over everything under the roots at once.
+
+Exit codes: `0` done, `1` failed, `2` a profile dir was left alone because a build held its lock.
+A scheduled run needs that difference; anything else it wants is in `--json`, which prints the
+groups, the busy dirs, the per-pass counts, every removal with its reason and every skip.
 
 ## Dependencies
 

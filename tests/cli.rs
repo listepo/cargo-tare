@@ -6,14 +6,15 @@ use predicates::str::contains;
 use tempfile::TempDir;
 
 mod common;
-use common::fake_target;
+use common::{fake_target, tare};
 
 const EXIT_FAILURE: i32 = 1;
 
-fn tare() -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_cargo-tare"));
-    cmd.arg("tare");
-    cmd
+/// A config home of its own, so no machine's `config.toml` reaches these runs.
+fn empty_config() -> (TempDir, Command) {
+    let tmp = TempDir::new().unwrap();
+    let cmd = tare(tmp.path());
+    (tmp, cmd)
 }
 
 #[test]
@@ -25,7 +26,7 @@ fn cli_output() {
 fn unknown_lossy_pass_fails_before_anything_is_touched() {
     let tmp = TempDir::new().unwrap();
     let index = tmp.path().join("index.bin");
-    tare()
+    tare(tmp.path())
         .args(["run", "--lossy", "nope", "--index"])
         .arg(&index)
         .arg(tmp.path())
@@ -38,7 +39,7 @@ fn unknown_lossy_pass_fails_before_anything_is_touched() {
 #[test]
 fn run_without_a_target_under_the_root_fails() {
     let tmp = TempDir::new().unwrap();
-    tare()
+    tare(tmp.path())
         .args(["run", "--index"])
         .arg(tmp.path().join("index.bin"))
         .arg(tmp.path())
@@ -50,7 +51,7 @@ fn run_without_a_target_under_the_root_fails() {
 #[test]
 fn status_of_a_root_without_targets_succeeds() {
     let tmp = TempDir::new().unwrap();
-    tare()
+    tare(tmp.path())
         .arg("status")
         .arg(tmp.path())
         .assert()
@@ -60,8 +61,8 @@ fn status_of_a_root_without_targets_succeeds() {
 
 #[test]
 fn missing_root_is_named_in_the_error() {
-    tare()
-        .args(["status", "/nonexistent-cargo-tare-root"])
+    let (_tmp, mut tare) = empty_config();
+    tare.args(["status", "/nonexistent-cargo-tare-root"])
         .assert()
         .code(EXIT_FAILURE)
         .stderr(contains("/nonexistent-cargo-tare-root"));
@@ -74,7 +75,7 @@ fn passes_and_size_floors_are_picked_by_flag() {
     fake_target(&root, "p", 64, 0);
     let index = root.join("index.bin");
     let compress_only = |extra: &[&str]| {
-        let mut cmd = tare();
+        let mut cmd = tare(&root);
         cmd.args(["run", "--pass", "compress"])
             .args(extra)
             .arg("--index")
@@ -83,7 +84,7 @@ fn passes_and_size_floors_are_picked_by_flag() {
         cmd
     };
 
-    tare()
+    tare(&root)
         .args(["run", "--pass", "nope", "--index"])
         .arg(&index)
         .arg(&root)
@@ -106,4 +107,13 @@ fn passes_and_size_floors_are_picked_by_flag() {
         .assert()
         .success()
         .stdout(contains("compress: planned 1"));
+}
+
+#[test]
+fn run_without_roots_and_without_a_config_says_so() {
+    let (_tmp, mut tare) = empty_config();
+    tare.arg("run")
+        .assert()
+        .code(EXIT_FAILURE)
+        .stderr(contains("no roots"));
 }

@@ -5,7 +5,6 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use assert_cmd::Command;
 use cargo_tare::engine::{self, Options, Report};
 use cargo_tare::incremental::{self, Incremental};
 use cargo_tare::inventory;
@@ -14,7 +13,7 @@ use predicates::str::contains;
 use tempfile::TempDir;
 
 mod common;
-use common::{Fixture, allocated_bytes, fake_target, run_unbusy};
+use common::{Fixture, allocated_bytes, fake_target, run_unbusy, tare as tare_in};
 
 const KIB: usize = 1024;
 const CACHE_KIB: usize = 256;
@@ -201,8 +200,8 @@ fn cli_drops_the_cache_only_when_asked_with_a_limit() {
     let idle = idle_target(&root, "idle", IDLE_DAYS + 1);
     let index = root.join("index.bin");
     let tare = || {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cargo-tare"));
-        cmd.args(["tare", "run", "--pass", "incremental", "--index"]);
+        let mut cmd = tare_in(&root);
+        cmd.args(["run", "--pass", "incremental", "--index"]);
         cmd.arg(&index);
         cmd
     };

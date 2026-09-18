@@ -8,7 +8,6 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
 | T8 | todo | P1 | 2 | 0% | |
-| T10 | todo | P1 | 2 | 0% | |
 | T12 | todo | P2 | 2 | 0% | |
 | T14 | todo | P1 | 3 | 0% | |
 | T15 | todo | P2 | 3 | 0% | |
@@ -29,13 +28,6 @@ does the same thing today.
 `incremental/` and lock files. Done: in a fresh worktree of the fixture, the first build compiles
 workspace members only and the seeded target adds ~0 allocated bytes. Register the seeded inodes
 in the hash index as shared (`src/index.rs`), otherwise the first dedupe run clones them again.
-
-### T10. Configuration and reporting
-
-`~/.config/cargo-tare/config.toml` (roots, `min-age`, `min-size`, per-pass switches and thresholds,
-family overrides), flag overrides, table and JSON reports, meaningful exit codes. Done: documented
-in `README.md`, invalid config fails with a precise message. `run` without arguments takes the
-configured roots (today it requires a `<ROOT>`).
 
 ### T12. `advise` and automation recipes
 
