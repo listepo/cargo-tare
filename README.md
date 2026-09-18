@@ -46,6 +46,7 @@ cargo tare run --dry-run ~/code     # plan only
 cargo tare run ~/code
 cargo tare run [--dry-run] [--pass <PASS>]... [--lossy <PASS>]... [--index <FILE>]
                [--config <FILE>] [--json] [<ROOT>...]
+cargo tare seed [--from <DIR>] [--dry-run] [--index <FILE>] [<DIR>]
               [--min-age <SECS>] [--min-size <BYTES>]
 cargo tare run --dry-run --lossy orphans ~/code
 cargo tare run --dry-run --lossy evict --evict-idle-days 30 ~/code
@@ -80,6 +81,17 @@ they exist for measurements, and the defaults are what `docs/bench.md` justifies
 file points at a missing worktree record). Nothing outside `target/` is touched — such a
 checkout can hold work git can no longer report. No threshold, and every removal is printed
 with its reason on a dry run too.
+
+**seed** copies instead of deleting. In a fresh worktree, `cargo tare seed` clones the target of
+a sibling checkout of the same repository — the one built most recently, at the same place
+inside it — into yours. On APFS every file is a `clonefile`, so the new target shares its blocks
+with the old one and costs no disk space until something rewrites it. `incremental/`, the lock
+files and leftover temp files stay behind, a profile dir with a running build is reported and
+not copied, and a checkout that already has a target is refused rather than merged into.
+
+How much of the first build it saves depends on what moved: units whose absolute path changed
+(the workspace members, path dependencies) are compiled again, everything else is reused. The
+test suite measures it against an empty target rather than assuming it.
 
 **incremental** deletes, so it is off unless you name it: `--lossy incremental
 --incremental-idle-days <N>` drops `target/<profile>/incremental/` in profile dirs with no build
@@ -129,7 +141,6 @@ the idle rules are decided over everything under the roots at once, so they stay
 Planned:
 
 ```
-cargo tare seed            # in a fresh worktree: clone a sibling's target
 cargo tare advise          # config findings
 ```
 

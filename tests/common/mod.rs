@@ -109,14 +109,7 @@ impl Fixture {
     }
 
     pub fn cargo(&self, target: &Path, args: &[&str]) -> Command {
-        let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
-        cmd.current_dir(self.root.join("ws"))
-            .env("CARGO_TARGET_DIR", target)
-            .args(args)
-            .args(["--offline", "--message-format=json"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        cmd
+        cargo_at(&self.root.join("ws"), target, args)
     }
 
     /// Builds everything the oracle looks at: `cargo build` and the test binaries.
@@ -128,28 +121,7 @@ impl Fixture {
 
     /// Units cargo does not consider fresh. Asking rebuilds them, so a second call is clean.
     pub fn stale_units(&self, target: &Path) -> Vec<String> {
-        let mut stale = Vec::new();
-        for args in ORACLE_BUILDS {
-            let out = self
-                .cargo(target, args)
-                .stdout(Stdio::piped())
-                .output()
-                .unwrap();
-            assert!(out.status.success(), "cargo {args:?}");
-            let mut artifacts = 0;
-            for line in String::from_utf8(out.stdout).unwrap().lines() {
-                let message: serde_json::Value = serde_json::from_str(line).unwrap();
-                if message["reason"] != "compiler-artifact" {
-                    continue;
-                }
-                artifacts += 1;
-                if message["fresh"] != true {
-                    stale.push(format!("{} {}", message["target"]["name"], args[0]));
-                }
-            }
-            assert!(artifacts > 0, "cargo {args:?} reported no artifacts");
-        }
-        stale
+        stale_units_at(&self.root.join("ws"), target)
     }
 
     /// The oracle of `DESIGN.md`: nothing is rebuilt, and what is there still works.
@@ -162,6 +134,44 @@ impl Fixture {
 }
 
 const ORACLE_BUILDS: [&[&str]; 2] = [&["build"], &["test", "--no-run"]];
+
+/// A cargo run in `ws` writing into `target`, offline and speaking JSON.
+pub fn cargo_at(ws: &Path, target: &Path, args: &[&str]) -> Command {
+    let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    cmd.current_dir(ws)
+        .env("CARGO_TARGET_DIR", target)
+        .args(args)
+        .args(["--offline", "--message-format=json"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    cmd
+}
+
+/// Units cargo does not consider fresh, in any checkout of the fixture. Asking rebuilds them,
+/// so a second call is clean.
+pub fn stale_units_at(ws: &Path, target: &Path) -> Vec<String> {
+    let mut stale = Vec::new();
+    for args in ORACLE_BUILDS {
+        let out = cargo_at(ws, target, args)
+            .stdout(Stdio::piped())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "cargo {args:?}");
+        let mut artifacts = 0;
+        for line in String::from_utf8(out.stdout).unwrap().lines() {
+            let message: serde_json::Value = serde_json::from_str(line).unwrap();
+            if message["reason"] != "compiler-artifact" {
+                continue;
+            }
+            artifacts += 1;
+            if message["fresh"] != true {
+                stale.push(format!("{} {}", message["target"]["name"], args[0]));
+            }
+        }
+        assert!(artifacts > 0, "cargo {args:?} reported no artifacts");
+    }
+    stale
+}
 
 /// The binary under test, with a config home of its own: a test must never read, or depend on,
 /// the configuration of the machine it runs on.

@@ -186,6 +186,31 @@ pub fn is_orphaned(target: &Path) -> bool {
     git_link(target).1
 }
 
+/// The git common dir of the project that owns `target`, if it has one. `target` need not
+/// exist: only the directories above it are read.
+pub fn family(target: &Path) -> Option<PathBuf> {
+    git_link(target).0
+}
+
+/// Every checkout git registers under this common dir: the repository itself and each worktree.
+/// Read from git's files directly, as everything else here is.
+pub fn checkouts(common: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = common.parent().map(Path::to_path_buf).into_iter().collect();
+    let entries = fs::read_dir(common.join(WORKTREES_DIR))
+        .into_iter()
+        .flatten();
+    for entry in entries.flatten() {
+        // `<common>/worktrees/<name>/gitdir` holds the path of the worktree's own `.git` file.
+        let Ok(text) = fs::read_to_string(entry.path().join("gitdir")) else {
+            continue;
+        };
+        if let Some(checkout) = Path::new(text.trim()).parent() {
+            out.push(checkout.to_path_buf());
+        }
+    }
+    out
+}
+
 /// The git common dir of the project that owns `target`, and whether the project is a worktree
 /// that its repository no longer knows. Reads git's files directly: a worktree whose record is
 /// gone is exactly the case where `git` itself refuses to answer.

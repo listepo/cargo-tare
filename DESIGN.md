@@ -268,6 +268,35 @@ space; a cluster that was shared while uncompressed (a run with only dedupe) sta
 a copy the backend refuses is tried again on every run; a file whose mode denies its owner
 reading or writing ends as `NotCompressed` or `Failed`.
 
+## Seed command (`src/seed.rs`)
+
+Not a pass: it runs on its own, before there is anything to shrink.
+
+- **Source choice.** `--from` names a checkout or a target dir. Without it, `choose` takes the
+  git common dir of the destination (`inventory::family`), asks `inventory::checkouts` for every
+  checkout registered under it (the repository itself and each `worktrees/<name>/gitdir`), looks
+  in each one at the same relative path the destination has inside its own checkout — a
+  workspace can sit anywhere in a repository — and takes the target built most recently.
+- **The copy is a clone.** `fs::copy` is `clonefile` on APFS, so the new target shares every
+  block with the old one and the volume loses nothing. Dirs are recreated, symlinks are
+  recreated as symlinks, and `incremental/`, `.cargo-lock` and leftover `.tare-tmp-` files are
+  left behind: a cache of another checkout's build, a lock that is not ours, and rubbish.
+- **Under the source's locks.** Every profile dir of the source is locked with
+  `ProfileLock::try_acquire` for the length of the walk; one that a build holds is reported and
+  skipped whole, so nothing half-written is ever copied. Exit code 2, as in `run`.
+- **Never into a live target.** A destination that already has a target dir is refused: seeding
+  merges nothing.
+- **The index.** For every copied file whose source stamp the index knows, the copy is stored
+  with the same hash and both sides are marked shared, so the next dedupe leaves the pair alone.
+  A source the index has never hashed stays unknown — seeding must not read gigabytes to fill an
+  index that the next `run` fills anyway; the cost is one needless clone for that file.
+
+Known limits: the yield depends on what moved — units whose absolute path is part of their
+fingerprint (workspace members, path dependencies) are compiled again in the new checkout, and
+the test suite measures this against an empty target instead of assuming it; the fixture has no
+registry dependencies, which are exactly the units that keep their paths across worktrees, so
+the measured win is a floor; `--from` is not checked for being in the same family.
+
 ## Orphans pass (`src/orphans.rs`)
 
 Lossy, so it runs only with `--lossy orphans`. No threshold: an orphan either is one or is not.
@@ -383,7 +412,7 @@ cargo tare run [--dry-run] [--lossy <PASS>]... [--index <FILE>] [<ROOT>]...
                [--incremental-idle-days <N>]        # with --lossy incremental
                                                     # --lossy orphans: no threshold
                [--pass <PASS>]... [--min-age <SECS>] [--min-size <BYTES>]  # benchmarks
-cargo tare seed [--from <dir>] [<dir>]# clone-seed a worktree's target
+cargo tare seed [--from <DIR>] [--dry-run] [--index <FILE>] [<DIR>]  # clone a sibling's target
 cargo tare advise                     # config findings: ignored [unstable] keys, build-dir hints
 ```
 

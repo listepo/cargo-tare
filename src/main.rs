@@ -14,6 +14,7 @@ use cargo_tare::incremental::{self, Incremental};
 use cargo_tare::index::HashIndex;
 use cargo_tare::inventory::{self, Inventory, ProfileInfo, Target};
 use cargo_tare::orphans::{self, Orphan, Orphans};
+use cargo_tare::seed;
 use clap::{Parser, Subcommand};
 
 /// Relative to `$HOME`. The digit follows the index file format.
@@ -62,6 +63,21 @@ enum Cmd {
     /// Plan and apply the passes, one family of targets at a time; profile dirs with a running
     /// build are skipped
     Run(RunArgs),
+    /// Clone a sibling checkout's target into a fresh one, so its first build starts warm
+    Seed {
+        /// Where to copy from: a checkout or a target dir [default: the family's newest target]
+        #[arg(long, value_name = "DIR")]
+        from: Option<PathBuf>,
+        /// Report what would be copied without touching anything
+        #[arg(long)]
+        dry_run: bool,
+        /// Content-hash cache [default: ~/.cache/cargo-tare/hashes-v1.bin]
+        #[arg(long, value_name = "FILE")]
+        index: Option<PathBuf>,
+        /// The checkout to seed [default: .]
+        #[arg(value_name = "DIR")]
+        dir: Option<PathBuf>,
+    },
 }
 
 #[derive(clap::Args)]
@@ -111,6 +127,12 @@ fn main() -> ExitCode {
     let done = match cmd {
         Cmd::Status { json, roots } => status(json, roots).map(|()| Done::Everything),
         Cmd::Run(args) => run(args),
+        Cmd::Seed {
+            from,
+            dry_run,
+            index,
+            dir,
+        } => seed_into(from, dry_run, index, dir),
     };
     match done {
         Ok(Done::Everything) => ExitCode::SUCCESS,
@@ -195,6 +217,68 @@ fn status(json: bool, mut roots: Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+fn index_path(flag: Option<PathBuf>) -> Result<PathBuf> {
+    match flag {
+        Some(path) => Ok(path),
+        None => {
+            let home = std::env::var_os("HOME").context("HOME is not set; pass --index")?;
+            Ok(PathBuf::from(home).join(DEFAULT_INDEX))
+        }
+    }
+}
+
+/// `cargo tare seed`: the whole command, since the copy itself lives in `seed.rs`.
+fn seed_into(
+    from: Option<PathBuf>,
+    dry_run: bool,
+    index: Option<PathBuf>,
+    dir: Option<PathBuf>,
+) -> Result<Done> {
+    let checkout = dir.unwrap_or_else(|| PathBuf::from("."));
+    let checkout = checkout
+        .canonicalize()
+        .with_context(|| format!("{}", checkout.display()))?;
+    let source = match from {
+        Some(path) => {
+            let path = path
+                .canonicalize()
+                .with_context(|| format!("{}", path.display()))?;
+            // A checkout or its target dir; both are what somebody means by "from there".
+            let target = path.join(seed::TARGET);
+            if target.is_dir() { target } else { path }
+        }
+        None => seed::choose(&checkout).context(
+            "no other checkout of this repository has a target dir; name one with --from",
+        )?,
+    };
+    let index_path = index_path(index)?;
+    let mut hashes = HashIndex::load(&index_path);
+    let seeded = seed::seed(&checkout, &source, &mut hashes, dry_run)
+        .with_context(|| format!("seeding {} from {}", checkout.display(), source.display()))?;
+    let verb = if dry_run { "would copy" } else { "copied" };
+    println!(
+        "{} from {}: {verb} {} files and {} symlinks, {} that the clones share with it",
+        checkout.join(seed::TARGET).display(),
+        seeded.source.display(),
+        seeded.files,
+        seeded.symlinks,
+        gib(seeded.bytes)
+    );
+    for dir in &seeded.busy {
+        println!("  busy, not copied: {}", dir.display());
+    }
+    if !dry_run {
+        hashes
+            .save(&index_path)
+            .with_context(|| format!("saving {}", index_path.display()))?;
+    }
+    Ok(if seeded.busy.is_empty() {
+        Done::Everything
+    } else {
+        Done::LeftBusy
+    })
+}
+
 fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -248,13 +332,7 @@ fn run(args: RunArgs) -> Result<Done> {
         dropping == incremental_idle_days.is_some(),
         "`--lossy incremental` and `--incremental-idle-days` need each other"
     );
-    let index_path = match args.index {
-        Some(path) => path,
-        None => {
-            let home = std::env::var_os("HOME").context("HOME is not set; pass --index")?;
-            PathBuf::from(home).join(DEFAULT_INDEX)
-        }
-    };
+    let index_path = index_path(args.index)?;
     let index = RefCell::new(HashIndex::load(&index_path));
     let (mut compress, mut dedupe) = (Compress::new(&index), Dedupe::new(&index));
     if let Some(secs) = args.min_age.or(config.min_age) {

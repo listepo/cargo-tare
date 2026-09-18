@@ -7,7 +7,6 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
-| T8 | todo | P1 | 2 | 0% | |
 | T12 | todo | P2 | 2 | 0% | |
 | T14 | todo | P1 | 3 | 0% | |
 | T15 | todo | P2 | 3 | 0% | |
@@ -21,13 +20,6 @@ inventory with families (`src/inventory.rs`), the hash index (`src/index.rs`) an
 harness with the freshness oracle (`tests/common/mod.rs`) exist.
 T13–T18 were added from the competitor review in `docs/research.md`; each card says which tool
 does the same thing today.
-
-### T8. `seed`: clone-seed a new worktree's target
-
-`cargo tare seed [--from <dir>] [<dir>]` with automatic source choice inside the family; excludes
-`incremental/` and lock files. Done: in a fresh worktree of the fixture, the first build compiles
-workspace members only and the seeded target adds ~0 allocated bytes. Register the seeded inodes
-in the hash index as shared (`src/index.rs`), otherwise the first dedupe run clones them again.
 
 ### T12. `advise` and automation recipes
 

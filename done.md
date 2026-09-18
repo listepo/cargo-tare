@@ -1,5 +1,61 @@
 # Done
 
+### T8. `seed`: clone-seed a new worktree's target
+
+`cargo tare seed [--from <dir>] [<dir>]` with automatic source choice inside the family; excludes
+`incremental/` and lock files. Done: in a fresh worktree of the fixture, the first build compiles
+workspace members only and the seeded target adds ~0 allocated bytes. Register the seeded inodes
+in the hash index as shared (`src/index.rs`), otherwise the first dedupe run clones them again.
+
+Execution plan: `src/seed.rs` — `choose(dest)` picks the source inside the family: the git common
+dir of the checkout (`inventory::family`), its registered checkouts (`inventory::checkouts`,
+reading `<common>/worktrees/*/gitdir`), and of those the target with the newest build. `--from`
+names one instead. `seed` walks the source target with `walkdir`, recreates dirs and symlinks and
+`fs::copy`s every file — `clonefile` on APFS, so the copy shares blocks and costs no space —
+skipping `incremental/`, `.cargo-lock` and leftover `.tare-tmp-` files. It holds the source's
+profile locks (`ProfileLock::try_acquire`) for the walk and refuses if the destination target
+already exists, so it can never merge into a live target. Index: for every copied file whose
+source stamp the index knows, the destination stamp is stored with the same hash and `shared`,
+and the source is marked shared, so the next dedupe leaves both alone; a file the index has not
+seen stays unknown and costs one needless clone on the next dedupe — a known limit, not a hash
+pass over gigabytes at seed time. Tests (`tests/seed.rs`, real `git worktree` + the cargo
+fixture): what the first build in a seeded worktree actually rebuilds (measured, not assumed),
+the excluded files, `--from`, refusal on an existing target, a busy source profile, the index
+entries, and an A/B pair of identical worktrees where only one is seeded. Verify: `just check`.
+
+Outcome: `src/seed.rs` + `cargo tare seed [--from <DIR>] [--dry-run] [--index <FILE>] [<DIR>]`.
+`choose` takes the git common dir of the destination (`inventory::family`, now public), asks the
+new `inventory::checkouts` for every checkout registered under it (the repository plus each
+`worktrees/<name>/gitdir`) and looks in each at the *same relative path* the destination has
+inside its own checkout — a workspace can sit anywhere in a repository, which the fixture proved
+by having its workspace in `ws/` — then takes the target built most recently. The copy walks the
+source with `walkdir`, recreates dirs and symlinks, `fs::copy`s files (`clonefile` on APFS, so
+the new target shares every block and the volume loses nothing) and leaves behind
+`incremental/`, `.cargo-lock` and `.tare-tmp-` leftovers. Every source profile dir is locked with
+`ProfileLock::try_acquire` for the walk; one a build holds is reported and skipped whole (exit
+code 2, as in `run`). A destination that already has a target is refused, never merged into.
+Index: a copy whose source stamp the index knows is stored with the same hash and both sides are
+marked shared, so the next dedupe leaves the pair alone.
+
+Measured, not assumed: a seeded worktree rebuilds strictly less than an empty one, but not
+nothing. Units whose absolute path is part of their fingerprint — the workspace members and the
+path dependency — are compiled again in the new checkout. The fixture builds `--offline` from
+path dependencies only, and registry dependencies are exactly the units that keep their paths
+across worktrees, so the measured win is the floor of the real one. The card's "compiles
+workspace members only" turned out to be optimistic and the A/B test states what actually
+happens instead.
+
+`tests/seed.rs`, 7 tests on a real `git worktree` of the cargo fixture: the copy is byte-identical
+and its size is what the report claims; the cache and the lock files are left behind; a dry run
+copies nothing and a second seed is refused; a busy source profile is reported and its dir not
+copied; the source is chosen inside the family and both sides end up shared in the index; an A/B
+pair where seeding is the only difference; and the CLI end to end. `tests/common/mod.rs` gained
+`cargo_at` / `stale_units_at` so the oracle can run in any checkout. `just check` green.
+
+Known limits: the seeded target weighs what `du` reports even though it shares every block —
+only free space shows the truth (`docs/bench.md`); `--from` is not checked for belonging to the
+same family; a file the index has never hashed costs one needless clone on the next dedupe.
+
 ### T10. Configuration and reporting
 
 `~/.config/cargo-tare/config.toml` (roots, `min-age`, `min-size`, per-pass switches and thresholds,

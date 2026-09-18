@@ -20,7 +20,7 @@ const CARGO_TAG_MARK: &str = "created by cargo";
 /// `<target>/<triple>/<profile>/.cargo-lock` is the deepest place a profile lock lives.
 const PROFILE_LOCK_MAX_DEPTH: usize = 3;
 /// `st_blocks` counts 512-byte units whatever the filesystem block size is.
-const ST_BLOCK_BYTES: u64 = 512;
+pub const ST_BLOCK_BYTES: u64 = 512;
 const PERMISSION_BITS: u32 = 0o7777;
 
 /// Identity and version of a file. Any rewrite by cargo or rustc changes it.
