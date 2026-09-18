@@ -8,6 +8,7 @@ use cargo_tare::compress::{self, Compress};
 use cargo_tare::dedupe::{self, Dedupe};
 use cargo_tare::engine::{self, Options, Pass};
 use cargo_tare::evict::{self, Evict, Limits};
+use cargo_tare::incremental::{self, Incremental};
 use cargo_tare::index::HashIndex;
 use cargo_tare::inventory::{self, Inventory, ProfileInfo, Target};
 use cargo_tare::orphans::{self, Orphan, Orphans};
@@ -17,9 +18,15 @@ use clap::{Parser, Subcommand};
 const DEFAULT_INDEX: &str = ".cache/cargo-tare/hashes-v1.bin";
 const BYTES_PER_GIB: f64 = (1u64 << 30) as f64;
 /// Every pass that deletes rebuildable data; `--lossy` takes these names.
-const LOSSY_PASSES: [&str; 2] = [orphans::NAME, evict::NAME];
+const LOSSY_PASSES: [&str; 3] = [orphans::NAME, evict::NAME, incremental::NAME];
 /// Every pass, in pipeline order; `--pass` takes these names.
-const PASSES: [&str; 4] = [orphans::NAME, evict::NAME, compress::NAME, dedupe::NAME];
+const PASSES: [&str; 5] = [
+    orphans::NAME,
+    evict::NAME,
+    incremental::NAME,
+    compress::NAME,
+    dedupe::NAME,
+];
 const SECS_PER_DAY: u64 = 24 * 60 * 60;
 
 /// Cargo runs external subcommands as `cargo-tare tare <args>`.
@@ -71,6 +78,10 @@ struct RunArgs {
     /// under the roots fit into this many GiB
     #[arg(long, value_name = "GIB")]
     evict_max_total_gib: Option<u64>,
+    /// With `--lossy incremental`: drop the incremental cache of profile dirs not built for
+    /// this many days
+    #[arg(long, value_name = "DAYS")]
+    incremental_idle_days: Option<u64>,
     /// Leave files younger than this alone, in seconds; both lossless passes [default: 3600]
     #[arg(long, value_name = "SECS")]
     min_age: Option<u64>,
@@ -183,6 +194,11 @@ fn run(args: RunArgs) -> Result<()> {
         evicting != (limits == Limits::default()),
         "`--lossy evict` and a limit (--evict-idle-days, --evict-max-total-gib) need each other"
     );
+    let dropping = opts.lossy.iter().any(|name| name == incremental::NAME);
+    ensure!(
+        dropping == args.incremental_idle_days.is_some(),
+        "`--lossy incremental` and `--incremental-idle-days` need each other"
+    );
     let index_path = match args.index {
         Some(path) => path,
         None => {
@@ -212,6 +228,9 @@ fn run(args: RunArgs) -> Result<()> {
         .flat_map(|target| target.profiles.iter().cloned())
         .collect();
     let evict = Evict::new(evict::select(&profiles, now_unix(), limits));
+    // Cargo keeps `incremental/` for workspace members only, so this costs one plain rebuild.
+    let idle_days = args.incremental_idle_days.unwrap_or(u64::MAX);
+    let incremental = Incremental::new(incremental::select(&profiles, now_unix(), idle_days));
     // Whole targets of checkouts git no longer registers; the sources next to them stay.
     let orphans = Orphans::new(
         inventory
@@ -224,8 +243,8 @@ fn run(args: RunArgs) -> Result<()> {
             })
             .collect(),
     );
-    // Pipeline order (`DESIGN.md`): orphans, evict, compress, dedupe.
-    let all: [&dyn Pass; 4] = [&orphans, &evict, &compress, &dedupe];
+    // Pipeline order (`DESIGN.md`): orphans, evict, incremental, compress, dedupe.
+    let all: [&dyn Pass; 5] = [&orphans, &evict, &incremental, &compress, &dedupe];
     let passes: Vec<&dyn Pass> = all
         .into_iter()
         .filter(|pass| args.pass.is_empty() || args.pass.iter().any(|name| name == pass.name()))

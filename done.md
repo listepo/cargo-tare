@@ -1,5 +1,51 @@
 # Done
 
+### T13. Lossy pass: `incremental`
+
+Drop `<profile>/incremental/` in profile dirs nobody has built in for N days. Nothing in the
+field does this: `cargo-clean-all` and `kondo` drop whole targets, and `CARGO_INCREMENTAL=0`
+avoids the directory at the price of every rebuild everywhere. `docs/research.md` measured
+`incremental = false` at −5.8 GB for one target (−40% of it) with local rebuilds 1.4–5× slower.
+Keeping the cache for what you are working on and dropping it everywhere else takes the size
+without the slowdown, and it is the largest single win still unclaimed after compress and dedupe.
+
+Only workspace members are compiled incrementally, so the cost of dropping it is one
+non-incremental rebuild of the workspace crates; third-party deps are untouched. Reuses the
+removal machinery of `evict` (whole dir, under cargo's lock, re-checked after locking), with
+`--lossy incremental --incremental-idle-days <N>`. Done: on the fixture the dir is gone and the
+oracle shows the rebuild is limited to workspace members; a busy profile is never touched; the
+reason is in the report on a dry run too.
+
+Outcome: `src/incremental.rs` — pure `select(profiles, now, idle_days)` returns the profile dirs
+that have an `incremental/` and whose last build is at least N days old (unknown last build is
+never chosen, as in `evict`); the lossy `Incremental` pass re-checks under the lock that the dir
+is still there and `inventory::last_built` still equals the inventory's reading. CLI:
+`--lossy incremental --incremental-idle-days <N>`, which need each other; third in the pipeline,
+after `evict`.
+
+Engine: instead of a third removal variant, `Action::RemoveProfile` became `Action::Remove`,
+which accepts a locked profile dir **or a dir inside one**, and its byte accounting sums the
+inodes whose paths all lie under the removed dir (a link from outside frees nothing). `evict`
+plans the same action unchanged; the profile's lock stays valid when only a subdir goes.
+
+Measured, and better than the card assumed: dropping a real cache rebuilds **nothing**. The
+cache is not part of cargo's fingerprint, so `Fixture::assert_fresh` passes right after the pass
+(zero stale units, tests and binary still run). The price is one non-incremental rebuild of the
+workspace members on the next edit — which is why the pass is meant for profiles you are not
+working in.
+
+`tests/incremental.rs`, 8 tests: idle cache goes while the artifacts, the lock file and a fresh
+profile's cache stay; a profile without a cache is never planned; not run unless named, dry run
+only lists; a running build is untouched; a build after the inventory keeps the cache; an A/B
+pair of identical trees where the freed bytes equal exactly the control's cache; the real
+fixture above; and the CLI end to end (both halves of the flag pair, dry run, removal). Two unit
+tests cover `select`. `just check` green.
+
+Known limits, as documented in `DESIGN.md`: the whole cache of a profile goes or none of it
+(cargo's per-crate session dirs are not read); a busy profile is skipped; the pass's own yield
+across a machine is not benchmarked yet — `docs/research.md` only has the −5.8 GB from building
+one target with `incremental = false`.
+
 ### T9.1. Lossy pass: `orphans`
 
 P0: on the measured machine 113.9 GB of ~158 GB sat in 30 worktree checkouts that git no longer

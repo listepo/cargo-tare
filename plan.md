@@ -10,7 +10,6 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | T8 | todo | P1 | 2 | 0% | |
 | T10 | todo | P1 | 2 | 0% | |
 | T12 | todo | P2 | 2 | 0% | |
-| T13 | todo | P1 | 2 | 0% | |
 | T14 | todo | P1 | 3 | 0% | |
 | T15 | todo | P2 | 3 | 0% | |
 | T16 | todo | P2 | 1 | 0% | |
@@ -61,22 +60,6 @@ either recommends or works around:
 Plus documented `just` and launchd examples for running the lossless passes after builds. Done:
 advice reproduces the findings in `docs/research.md` on the measured machine, and each item
 prints the file and key it is about.
-
-### T13. Lossy pass: `incremental`
-
-Drop `<profile>/incremental/` in profile dirs nobody has built in for N days. Nothing in the
-field does this: `cargo-clean-all` and `kondo` drop whole targets, and `CARGO_INCREMENTAL=0`
-avoids the directory at the price of every rebuild everywhere. `docs/research.md` measured
-`incremental = false` at −5.8 GB for one target (−40% of it) with local rebuilds 1.4–5× slower.
-Keeping the cache for what you are working on and dropping it everywhere else takes the size
-without the slowdown, and it is the largest single win still unclaimed after compress and dedupe.
-
-Only workspace members are compiled incrementally, so the cost of dropping it is one
-non-incremental rebuild of the workspace crates; third-party deps are untouched. Reuses the
-removal machinery of `evict` (whole dir, under cargo's lock, re-checked after locking), with
-`--lossy incremental --incremental-idle-days <N>`. Done: on the fixture the dir is gone and the
-oracle shows the rebuild is limited to workspace members; a busy profile is never touched; the
-reason is in the report on a dry run too.
 
 ### T14. Compress and report the cargo home
 

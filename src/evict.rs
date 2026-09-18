@@ -112,7 +112,7 @@ impl Pass for Evict {
             .filter(|(info, _)| locked(&info.dir))
             // Now that the lock is ours: a build that ran after the inventory keeps its profile.
             .filter(|(info, _)| inventory::last_built(&info.dir) == info.last_built_unix)
-            .map(|(info, reason)| Action::RemoveProfile {
+            .map(|(info, reason)| Action::Remove {
                 dir: info.dir.clone(),
                 reason: reason.to_string(),
             })

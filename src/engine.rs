@@ -32,9 +32,9 @@ pub enum Action {
     Replace(Replace),
     /// Replace every path of the inode with a compressed copy of itself.
     Compress(Inode),
-    /// Lossy: delete a whole profile dir, the way `cargo clean` would. `reason` is for the
-    /// report, dry run included.
-    RemoveProfile {
+    /// Lossy: delete a profile dir whose lock we hold, the way `cargo clean` would, or a dir
+    /// inside one, such as `incremental/`. `reason` is for the report, dry run included.
+    Remove {
         dir: PathBuf,
         reason: String,
     },
@@ -210,10 +210,16 @@ pub fn run(profile_dirs: &[PathBuf], passes: &[&dyn Pass], opts: &Options) -> io
             let bytes = match &action {
                 Action::Replace(replace) => replace.member.allocated,
                 Action::Compress(inode) => inode.allocated,
-                Action::RemoveProfile { dir, reason } => {
+                Action::Remove { dir, reason } => {
                     pass_report.removals.push((dir.clone(), reason.clone()));
-                    let profile = profiles.iter().find(|profile| profile.dir == *dir);
-                    profile.map_or(0, |p| p.inodes.iter().map(|inode| inode.allocated).sum())
+                    profiles
+                        .iter()
+                        .filter(|profile| dir.starts_with(&profile.dir))
+                        .flat_map(|profile| &profile.inodes)
+                        // A link from outside survives the removal, so nothing is freed by it.
+                        .filter(|inode| inode.paths.iter().all(|path| path.starts_with(dir)))
+                        .map(|inode| inode.allocated)
+                        .sum()
                 }
                 Action::RemoveTarget { dir, reason, bytes } => {
                     pass_report.removals.push((dir.clone(), reason.clone()));
@@ -227,10 +233,10 @@ pub fn run(profile_dirs: &[PathBuf], passes: &[&dyn Pass], opts: &Options) -> io
             }
             match action {
                 Action::Compress(inode) => to_compress.push(inode),
-                Action::RemoveProfile { dir, .. } => {
+                Action::Remove { dir, .. } => {
                     removal_tried = true;
-                    // Only a dir whose lock we hold, never one merely inside it or around it.
-                    let unlocked = !locked.contains(&dir);
+                    // A locked profile dir or something inside it, never one around it.
+                    let unlocked = !locked.iter().any(|held| dir.starts_with(held));
                     remove(dir, unlocked, bytes, &mut locked, &mut pass_report);
                 }
                 Action::RemoveTarget { dir, .. } => {

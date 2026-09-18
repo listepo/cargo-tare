@@ -69,7 +69,8 @@ Only dirs carrying cargo's own `CACHEDIR.TAG` count as targets. `--lossy` enable
 pass that deletes rebuildable data; lossless passes need no flag. How the engine keeps a target
 safe is described in `DESIGN.md`, "Engine" and "Safety invariants".
 
-`--pass <PASS>` runs only the passes you name (`orphans`, `compress`, `dedupe`, `evict`), which
+`--pass <PASS>` runs only the passes you name (`orphans`, `evict`, `incremental`, `compress`,
+`dedupe`), which
 is how the benchmarks tell them apart. `--min-age` and `--min-size` move the two floors below;
 they exist for measurements, and the defaults are what `docs/bench.md` justifies.
 
@@ -78,6 +79,12 @@ they exist for measurements, and the defaults are what `docs/bench.md` justifies
 file points at a missing worktree record). Nothing outside `target/` is touched — such a
 checkout can hold work git can no longer report. No threshold, and every removal is printed
 with its reason on a dry run too.
+
+**incremental** deletes, so it is off unless you name it: `--lossy incremental
+--incremental-idle-days <N>` drops `target/<profile>/incremental/` in profile dirs with no build
+for N days. Cargo writes that cache for workspace members only, and it is not part of a
+fingerprint: right after the pass nothing is stale at all, and the cost is one non-incremental
+rebuild the next time you edit a crate in that workspace.
 
 **evict** deletes, so it is off unless you name it: `--lossy evict` plus `--evict-idle-days <N>`
 (profile dirs such as `target/debug` with no build for N days), `--evict-max-total-gib <N>`

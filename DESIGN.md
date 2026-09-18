@@ -61,9 +61,10 @@ every choice are in `docs/research.md`.
 | 0 | `seed` (command, at worktree creation) | lossless | clone a family member's target into the new worktree |
 | 1 | `orphans` | lossy | targets whose project dir / worktree is gone or whose branch is merged |
 | 2 | `evict` | lossy | whole profile dirs idle for N days; least-recently-built first until under a global size cap |
-| 3 | `prune` | lossy | roadmap: units the current build graph no longer references |
-| 4 | `dedupe` + `compress` (fused) | lossless | see below |
-| 5 | `report` | — | bytes before / after per pass, per target, JSON or table |
+| 3 | `incremental` | lossy | the `incremental/` cache of profile dirs idle for N days |
+| 4 | `prune` | lossy | roadmap: units the current build graph no longer references |
+| 5 | `dedupe` + `compress` (fused) | lossless | see below |
+| 6 | `report` | — | bytes before / after per pass, per target, JSON or table |
 
 Ordering rule: delete first so lossless passes never hash or compress bytes that are about to
 disappear; lossless passes last so they see the final set of inodes.
@@ -306,10 +307,10 @@ Lossy, so it runs only with `--lossy evict`, and only together with at least one
   built goes next (ties broken by path, so a run is reproducible). Idle removals count toward
   the cap. A profile whose last build is unknown is never chosen.
 - **The choice is made before any lock is held**, so the pass re-checks under the lock: it plans
-  `Action::RemoveProfile` only for a dir the engine has locked and whose last build still equals
+  `Action::Remove` only for a dir the engine has locked and whose last build still equals
   the inventory's. A build that slipped in between keeps its profile.
-- **The engine removes, not the pass.** `RemoveProfile` is refused (`Skip::Unlocked`) unless the
-  dir is exactly one of the locked profile dirs; then the whole dir goes, lock file included,
+- **The engine removes, not the pass.** `Remove` is refused (`Skip::Unlocked`) unless the dir is
+  a locked profile dir or inside one; then the whole dir goes, lock file included,
   which is what `cargo clean --profile` does. The dir leaves the set that later passes scan.
   `CACHEDIR.TAG` and the other profiles of the target stay.
 - **Always reported.** Every planned removal and its reason land in `PassReport::removals`, on a
@@ -321,6 +322,31 @@ Known limits: a busy profile is skipped, so a run may end above the cap; the cap
 against sizes from the inventory, taken before compress and dedupe shrink the rest; a profile
 dir that disappears between the inventory and the lock (a concurrent `cargo clean`) fails the
 run with the I/O error instead of being skipped. Thresholds are flags until the config (T10).
+
+## Incremental pass (`src/incremental.rs`)
+
+Lossy, so it runs only with `--lossy incremental --incremental-idle-days <N>`; the flags need
+each other, as `evict`'s do.
+
+- **What it drops.** `<profile>/incremental/`, rustc's incremental-compilation cache, in every
+  profile dir whose last build is at least N days old. Cargo writes it for workspace members
+  only, so no dependency has anything there to lose.
+- **Measured cost: nothing, until the next edit.** The cache is not part of cargo's fingerprint.
+  After the pass the build oracle reports zero stale units (`tests/incremental.rs`); the price
+  is paid on the next change to a workspace member, which is then compiled non-incrementally
+  once. That is why the pass is for profiles you are *not* working in, and why `--min-age` style
+  floors do not apply to it: the age that matters is the profile's last build.
+- **Selection is pure**, except for one `is_dir` check: a profile with no cache is never planned.
+  A profile whose last build is unknown is never chosen, as in `evict`.
+- **Re-checked under the lock**: the cache goes only if the engine holds that profile's lock and
+  `inventory::last_built` still equals the inventory's reading. A build in between keeps it.
+- **The engine removes, not the pass.** `Action::Remove` accepts a locked profile dir *or a dir
+  inside one*, which is what makes this pass one selector instead of a second removal path.
+  The profile dir itself stays, so its lock stays valid for the passes that follow.
+
+Known limits: the whole cache of a profile goes or none of it — cargo's per-crate session dirs
+are not read; a busy profile is skipped; `docs/research.md` measured `incremental = false` at
+−5.8 GB on one target, but the pass's own yield across a machine is not benchmarked yet.
 
 ## Inventory and `status` (`src/inventory.rs`)
 
@@ -353,7 +379,8 @@ equal files in unrelated projects are not shared.
 cargo tare status [--json] [ROOT]...  # inventory, families, potential savings; read-only
 cargo tare run [--dry-run] [--lossy <PASS>]... [--index <FILE>] <ROOT>...
                [--evict-idle-days <N>] [--evict-max-total-gib <N>]   # with --lossy evict
-                                                                     # --lossy orphans: no threshold
+               [--incremental-idle-days <N>]        # with --lossy incremental
+                                                    # --lossy orphans: no threshold
                [--pass <PASS>]... [--min-age <SECS>] [--min-size <BYTES>]  # benchmarks
 cargo tare seed [--from <dir>] [<dir>]# clone-seed a worktree's target
 cargo tare advise                     # config findings: ignored [unstable] keys, build-dir hints

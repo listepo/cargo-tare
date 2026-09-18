@@ -4,6 +4,7 @@ pub mod compress;
 pub mod dedupe;
 pub mod engine;
 pub mod evict;
+pub mod incremental;
 pub mod index;
 pub mod inventory;
 pub mod model;

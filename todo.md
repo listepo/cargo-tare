@@ -1,7 +1,6 @@
 - T8. `seed`: clone-seed a new worktree's target
 - T10. Configuration and reporting
 - T12. `advise` and automation recipes
-- T13. Lossy pass: `incremental`
 - T14. Compress and report the cargo home
 - T15. Lossy pass: `orphan-toolchain` report
 - T16. Lossy pass: `doc`
