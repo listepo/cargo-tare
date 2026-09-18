@@ -44,6 +44,8 @@ pub struct Target {
     pub compressed_bytes: u64,
     /// Allocated bytes of files the compress pass would still look at.
     pub compressible_bytes: u64,
+    /// Allocated bytes of the profiles' `incremental/` dirs, which no build needs to keep.
+    pub incremental_bytes: u64,
     /// Upper bound for dedupe: bytes of files whose size also occurs in a sibling target.
     pub dedupe_candidate_bytes: u64,
     /// The latest build of any profile, as unix seconds.
@@ -140,6 +142,7 @@ fn inspect(root: &Path) -> io::Result<(Target, HashMap<u64, u64>)> {
         allocated_bytes: 0,
         compressed_bytes: 0,
         compressible_bytes: 0,
+        incremental_bytes: 0,
         dedupe_candidate_bytes: 0,
     };
     let mut sizes: HashMap<u64, u64> = HashMap::new();
@@ -155,6 +158,9 @@ fn inspect(root: &Path) -> io::Result<(Target, HashMap<u64, u64>)> {
             .find(|profile| inode.paths[0].starts_with(&profile.dir));
         if let Some(profile) = holder {
             profile.allocated_bytes += inode.allocated;
+            if inode.paths[0].starts_with(profile.dir.join(crate::incremental::DIR)) {
+                target.incremental_bytes += inode.allocated;
+            }
         }
         if inode.flags & UF_COMPRESSED != 0 {
             target.compressed_bytes += inode.allocated;

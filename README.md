@@ -3,8 +3,8 @@
 Tare: the weight of the packaging, not the goods. `cargo-tare` takes the dead weight out of Cargo
 `target/` directories — without deleting what you still build with and without slowing builds.
 
-Status: early. `status`, compress, dedupe and the opt-in `orphans` / `evict` work; the other
-passes are in `plan.md`.
+Status: early. `status`, `advise`, `seed`, compress, dedupe and the opt-in `orphans` / `evict` /
+`incremental` work; the rest is in `plan.md`.
 
 ## Why
 
@@ -46,6 +46,7 @@ cargo tare run --dry-run ~/code     # plan only
 cargo tare run ~/code
 cargo tare run [--dry-run] [--pass <PASS>]... [--lossy <PASS>]... [--index <FILE>]
                [--config <FILE>] [--json] [<ROOT>...]
+cargo tare advise ~/code            # read-only: what makes these targets bigger
 cargo tare seed [--from <DIR>] [--dry-run] [--index <FILE>] [<DIR>]
               [--min-age <SECS>] [--min-size <BYTES>]
 cargo tare run --dry-run --lossy orphans ~/code
@@ -112,6 +113,16 @@ shell. One profile with a build running, or one built since the run started look
 target dir and the free profiles are evicted on their own. Only `target/` is ever removed; the
 sources next to it are not.
 
+**advise** changes nothing: it reads the manifests and cargo configs of the projects it finds
+and names what makes their targets bigger than they need to be — full debuginfo where
+`line-tables-only` would do, dependency debuginfo nobody steps into, a missing `strip` in
+release, `[unstable]` keys a stable toolchain ignores without a word, and
+`cache.auto-clean-frequency`, which cargo has cleaned the cargo home by since 1.88. Every finding
+names the file and the key it is about, including keys the file does not have yet, because
+cargo's own defaults are part of the problem. Below them come the things only the inventory
+shows: what `incremental/` weighs here, families whose targets could share a `[build] build-dir`,
+checkouts that `seed` would fill, and orphaned worktrees. `--json` prints the same as data.
+
 `--json` prints the same report as one JSON document instead of the table. Exit codes: `0`
 everything the run planned was done, `1` the run failed (bad flags, bad config, I/O), `2` a
 profile dir was skipped because a build held its lock — what a scheduled run needs to tell
@@ -153,3 +164,30 @@ cargo tare advise          # config findings
 
 macOS / APFS only for 0.x. Version-gated features (unit-level pruning, shared build-dir
 automation, symlink mode for non-reflink filesystems) are in `roadmap.md`.
+
+## Running it automatically
+
+The lossless passes are safe to run unattended: they never delete, they skip a profile dir with a
+running build, and exit code `2` says a build was in the way. A `just` recipe after a build:
+
+```just
+tare:
+    cargo tare run ~/code || test $? -eq 2
+```
+
+Or on macOS, every night, with launchd (`~/Library/LaunchAgents/dev.cargo-tare.plist`):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>Label</key><string>dev.cargo-tare</string>
+  <key>ProgramArguments</key>
+  <array><string>/usr/bin/env</string><string>cargo</string><string>tare</string>
+         <string>run</string><string>/Users/me/code</string></array>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer></dict>
+  <key>Nice</key><integer>10</integer>
+</dict></plist>
+```
+
+Put the roots and the lossy passes in the config file rather than in the plist, so the same
+schedule follows what you change there. Load it with `launchctl load -w <path>`.

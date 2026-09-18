@@ -5,6 +5,7 @@ use std::process::ExitCode;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, ensure};
+use cargo_tare::advise::{self, Kind};
 use cargo_tare::compress::{self, Compress};
 use cargo_tare::config::{self, Config};
 use cargo_tare::dedupe::{self, Dedupe};
@@ -54,6 +55,16 @@ enum Cmd {
     /// List cargo target dirs under the roots: real size, families, what the passes could win
     Status {
         /// Print the inventory as JSON
+        #[arg(long)]
+        json: bool,
+        /// Dirs to search; a target dir itself works too [default: .]
+        #[arg(value_name = "ROOT")]
+        roots: Vec<PathBuf>,
+    },
+    /// Read the manifests and cargo configs under the roots and say what makes their targets
+    /// bigger than they need to be; changes nothing
+    Advise {
+        /// Print the findings as JSON
         #[arg(long)]
         json: bool,
         /// Dirs to search; a target dir itself works too [default: .]
@@ -130,6 +141,7 @@ fn main() -> ExitCode {
     let Cargo::Tare(Tare { cmd }) = Cargo::parse();
     let done = match cmd {
         Cmd::Status { json, roots } => status(json, roots).map(|()| Done::Everything),
+        Cmd::Advise { json, roots } => advise(json, roots).map(|()| Done::Everything),
         Cmd::Run(args) => run(args),
         Cmd::Seed {
             from,
@@ -219,6 +231,99 @@ fn status(json: bool, mut roots: Vec<PathBuf>) -> Result<()> {
         gib(sum(|t| t.dedupe_candidate_bytes))
     );
     Ok(())
+}
+
+/// `cargo tare advise`: which files to read and how to print what they say. The checks live in
+/// `advise.rs`; this reads nothing but text and writes nothing at all.
+fn advise(json: bool, mut roots: Vec<PathBuf>) -> Result<()> {
+    if roots.is_empty() {
+        roots = match config::default_path() {
+            Some(path) => Config::load(&path)?.roots,
+            None => Vec::new(),
+        };
+    }
+    let inventory = read_inventory(roots)?;
+    let mut findings = Vec::new();
+    let mut read = Vec::new();
+    for target in &inventory.targets {
+        let Some(project) = target.root.parent() else {
+            continue;
+        };
+        let files = [
+            (project.join("Cargo.toml"), Kind::Manifest),
+            (project.join(".cargo/config.toml"), Kind::Config),
+        ];
+        for (file, kind) in files {
+            if read.contains(&file) {
+                continue;
+            }
+            findings.extend(review_file(&file, kind, project));
+            read.push(file);
+        }
+    }
+    // The cargo home is advised on even when it has no config file at all: the keys it is
+    // missing are the point.
+    let home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")));
+    if let Some(home) = home {
+        findings.extend(review_file(&home.join("config.toml"), Kind::Home, &home));
+    }
+    let notes = advise::notes(&inventory.targets);
+    if json {
+        let report = serde_json::json!({ "findings": findings, "notes": notes });
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    let mut file = None;
+    for finding in &findings {
+        if file != Some(&finding.file) {
+            file = Some(&finding.file);
+            println!("{}", finding.file.display());
+        }
+        println!("  {}: {}", finding.key, finding.note);
+    }
+    if !notes.is_empty() {
+        println!("from the inventory");
+        for note in &notes {
+            println!("  {}: {}", note.about, note.note);
+        }
+    }
+    if findings.is_empty() && notes.is_empty() {
+        println!("nothing to change");
+    }
+    Ok(())
+}
+
+/// One file's findings. A file that is not there is not a finding of its own — except for the
+/// cargo home's config, whose absent keys `review` reports from an empty document.
+fn review_file(file: &Path, kind: Kind, dir: &Path) -> Vec<advise::Finding> {
+    let text = match std::fs::read_to_string(file) {
+        Ok(text) => text,
+        Err(_) if kind == Kind::Home => String::new(),
+        Err(_) => return Vec::new(),
+    };
+    let doc: toml::Table = match text.parse() {
+        Ok(doc) => doc,
+        Err(error) => {
+            eprintln!("warning: {}: {error}", file.display());
+            return Vec::new();
+        }
+    };
+    // Only asked when the answer matters, since it costs a process.
+    let nightly = doc.get("unstable").is_some() && nightly_toolchain(dir);
+    advise::review(file, kind, &doc, nightly)
+}
+
+/// Whether the toolchain cargo would use in `dir` is a nightly one, which is the only one that
+/// reads `[unstable]`. A rustc that cannot be run at all is treated as stable: the advice is
+/// then about a key that does nothing, which is still the safer thing to say.
+fn nightly_toolchain(dir: &Path) -> bool {
+    std::process::Command::new("rustc")
+        .arg("--version")
+        .current_dir(dir)
+        .output()
+        .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("nightly"))
 }
 
 fn index_path(flag: Option<PathBuf>) -> Result<PathBuf> {

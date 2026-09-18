@@ -7,41 +7,16 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
-| T12 | todo | P2 | 2 | 0% | |
 | T14 | todo | P1 | 3 | 0% | |
 | T15 | todo | P2 | 3 | 0% | |
 | T16 | todo | P2 | 1 | 0% | |
 | T18 | todo | P3 | 3 | 0% | |
 
-Blockers: none. Everything is free to start: the engine (`src/engine.rs`), the inode model (`src/model.rs`), the
-inventory with families (`src/inventory.rs`), the hash index (`src/index.rs`) and the test
-harness with the freshness oracle (`tests/common/mod.rs`) exist.
+Blockers: none. Everything is free to start: the engine (`src/engine.rs`), the inode model
+(`src/model.rs`), the inventory with families (`src/inventory.rs`), the hash index
+(`src/index.rs`) and the test harness with the freshness oracle (`tests/common/mod.rs`) exist.
 T13–T18 were added from the competitor review in `docs/research.md`; each card says which tool
 does the same thing today.
-
-### T12. `advise` and automation recipes
-
-`cargo tare advise` reads the configs that decide how big a target grows and says what to change.
-The checklist, from the comparison in `docs/research.md` — every line is something a competitor
-either recommends or works around:
-
-- profile keys that bloat a target: `debug` (`line-tables-only` instead of `true`), `debug = false`
-  for `[profile.dev.package."*"]`, `split-debuginfo` (macOS leaves `.dSYM` trees otherwise),
-  `strip` for release, `codegen-units`;
-- `incremental`: what turning it off would save here, and that T13 is the cheaper answer;
-- `[unstable]` keys that a stable toolchain silently ignores (this machine had some), including
-  `-Zembed-metadata=no` and `-Ztrim-paths`, with the roadmap item that will use them;
-- `cache.auto-clean-frequency` for the cargo home (stable since 1.88) — the cargo-cache /
-  cargo-trim niche, which cargo now covers itself;
-- families that could share a `build-dir` (stable since 1.91) and the lock contention that makes
-  it a bad trade for parallel agents;
-- `cargo-hakari` for workspaces that rebuild too often, and `sccache` for machines that rebuild
-  from scratch a lot — neither shrinks a live target, and both compose with this tool;
-- worktrees never seeded (needs T8).
-
-Plus documented `just` and launchd examples for running the lossless passes after builds. Done:
-advice reproduces the findings in `docs/research.md` on the measured machine, and each item
-prints the file and key it is about.
 
 ### T14. Compress and report the cargo home
 

@@ -410,6 +410,32 @@ Read-only: takes no locks and changes nothing, so it is safe next to running bui
 runs alone), so locks are held only in targets that are compared with each other. Known limit:
 equal files in unrelated projects are not shared.
 
+## Advise command (`src/advise.rs`)
+
+Read-only, and the only command that reads anything outside a target dir. Two lists:
+
+- **Findings** come from files. `review(file, kind, doc, nightly)` is pure over a parsed
+  `toml::Table`, so every check is a unit test over a literal document. A manifest contributes the
+  `[profile.*]` checks (`debug` spelled any of the three ways cargo accepts, the `"*"` dependency
+  override, `strip` for release, `split-debuginfo = "packed"`, `codegen-units = 1` in a dev
+  profile); a config contributes `build.incremental` and, on a stable toolchain, the `[unstable]`
+  table cargo ignores without a word; the cargo home's config is also asked for
+  `cache.auto-clean-frequency`, which cargo has cleaned by since 1.88. A missing key is a finding
+  as much as a wrong one — cargo's own default for `profile.dev.debug` is full debuginfo — so a
+  finding names the file and the key it is *about*, which is not always a key the file has.
+- **Notes** come from the inventory, because no single file explains them: what `incremental/`
+  weighs under the roots, families whose targets could share a `[build] build-dir` (stable since
+  1.91, at the price of serializing parallel builds on one lock), checkouts with no target dir
+  that `seed` would fill, and orphaned worktrees for `--lossy orphans`.
+
+The toolchain channel is only asked for (`rustc --version` in the project dir) when a config has
+an `[unstable]` table, since that is the only check it decides; a rustc that cannot be run counts
+as stable. Numbers quoted in the advice are the measured ones in `docs/research.md`.
+
+Out of scope on purpose: `cargo-hakari` and `sccache` help with rebuild time, not with the size
+of a live target, and nothing in a file says whether a workspace wants them — they stay in
+`docs/research.md` rather than in the output.
+
 ## CLI surface
 
 ```
@@ -422,7 +448,7 @@ cargo tare run [--dry-run] [--lossy <PASS>]... [--index <FILE>] [<ROOT>]...
                                                     # --lossy orphans: no threshold
                [--pass <PASS>]... [--min-age <SECS>] [--min-size <BYTES>]  # benchmarks
 cargo tare seed [--from <DIR>] [--dry-run] [--index <FILE>] [<DIR>]  # clone a sibling's target
-cargo tare advise                     # config findings: ignored [unstable] keys, build-dir hints
+cargo tare advise [--json] [ROOT]...  # what makes these targets bigger than they need to be
 ```
 
 Config (`src/config.rs`): `$XDG_CONFIG_HOME/cargo-tare/config.toml`, else

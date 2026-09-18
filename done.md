@@ -1,5 +1,55 @@
 # Done
 
+### T12. `advise` and automation recipes
+
+`cargo tare advise` reads the configs that decide how big a target grows and says what to change.
+The checklist, from the comparison in `docs/research.md` — every line is something a competitor
+either recommends or works around:
+
+- profile keys that bloat a target: `debug` (`line-tables-only` instead of `true`), `debug = false`
+  for `[profile.dev.package."*"]`, `split-debuginfo` (macOS leaves `.dSYM` trees otherwise),
+  `strip` for release, `codegen-units`;
+- `incremental`: what turning it off would save here, and that T13 is the cheaper answer;
+- `[unstable]` keys that a stable toolchain silently ignores (this machine had some), including
+  `-Zembed-metadata=no` and `-Ztrim-paths`, with the roadmap item that will use them;
+- `cache.auto-clean-frequency` for the cargo home (stable since 1.88) — the cargo-cache /
+  cargo-trim niche, which cargo now covers itself;
+- families that could share a `build-dir` (stable since 1.91) and the lock contention that makes
+  it a bad trade for parallel agents;
+- `cargo-hakari` for workspaces that rebuild too often, and `sccache` for machines that rebuild
+  from scratch a lot — neither shrinks a live target, and both compose with this tool;
+- worktrees never seeded (needs T8).
+
+Plus documented `just` and launchd examples for running the lossless passes after builds. Done:
+advice reproduces the findings in `docs/research.md` on the measured machine, and each item
+prints the file and key it is about.
+
+Outcome: `cargo tare advise [--json] [ROOT]...` reads the manifests and cargo configs of the
+projects the inventory finds, plus `$CARGO_HOME/config.toml`, and prints two lists. Findings come
+from files through the pure `advise::review(file, kind, doc, nightly)`: `profile.<p>.debug` (all
+three spellings of full debuginfo, and cargo's own default for `dev`), the `"*"` dependency
+override, `profile.release.strip`, `split-debuginfo = "packed"`, `codegen-units = 1` in a dev
+profile, `build.incremental`, an `[unstable]` table on a stable toolchain, and
+`cache.auto-clean-frequency` in the cargo home. Notes come from the inventory: what `incremental/`
+weighs under the roots (a new `Target::incremental_bytes`, summed in the existing scan), families
+whose targets could share a `build-dir`, checkouts `seed` would fill, and orphaned worktrees. The
+toolchain channel is only asked for when a config has an `[unstable]` table.
+
+Checked against the machine the research was done on: `advise` over `packages/` reproduced
+`docs/research.md`'s finding that `[unstable] no-embed-metadata` in `~/.cargo/config.toml` is
+ignored on stable, and found the 6-target family and a checkout with no target dir.
+
+Out of scope, deliberately: `cargo-hakari` and `sccache` help with rebuild time rather than with
+the size of a live target, and no file says whether a workspace wants them; they stay in
+`docs/research.md`. The `just` and launchd recipes are in README instead of the output.
+
+Tests: 6 unit tests over literal TOML (including a manifest that has taken every piece of advice
+and gets nothing) and `tests/advise.rs` — the A/B `ab_a_tuned_manifest_gets_no_profile_advice`
+(same tree twice, the manifest the only difference), a finding-names-file-and-key test, a
+snapshot test proving the command writes nothing, the JSON shape, and a broken TOML warning that
+does not end the run. Docs: DESIGN.md "Advise command", README `advise` paragraph and a "Running
+it automatically" section.
+
 ### T17. Whole-target eviction
 
 `evict` today selects profile dirs. `cargo-clean-all` and `kondo` work at target granularity, so
