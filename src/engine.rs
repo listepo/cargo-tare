@@ -160,10 +160,13 @@ pub struct ProfileLock {
 impl ProfileLock {
     /// `None` when a build holds the lock. A missing lock file is an error: not a profile dir.
     pub fn try_acquire(profile_dir: &Path) -> io::Result<Option<Self>> {
-        let file = File::options()
-            .read(true)
-            .write(true)
-            .open(profile_dir.join(CARGO_LOCK_FILE))?;
+        Self::try_lock_file(&profile_dir.join(CARGO_LOCK_FILE))
+    }
+
+    /// The same, for a lock file named directly — `$CARGO_HOME/.package-cache`, which cargo
+    /// holds for every dir of the cargo home at once.
+    pub fn try_lock_file(file: &Path) -> io::Result<Option<Self>> {
+        let file = File::options().read(true).write(true).open(file)?;
         match file.try_lock() {
             Ok(()) => Ok(Some(Self { _file: file })),
             Err(TryLockError::WouldBlock) => Ok(None),
@@ -172,7 +175,23 @@ impl ProfileLock {
     }
 }
 
-pub fn run(profile_dirs: &[PathBuf], passes: &[&dyn Pass], opts: &Options) -> io::Result<Report> {
+/// Which lock guards the dirs of a run.
+#[derive(Clone, Copy, Debug)]
+pub enum Locks<'a> {
+    /// Cargo's per-profile lock: each dir carries its own `.cargo-lock`, and a dir whose lock a
+    /// build holds is left out of the run.
+    PerDir,
+    /// One lock file for every dir at once, the way cargo guards its home with
+    /// `.package-cache`. Held: every dir is worked on. Busy: none of them is.
+    Shared(&'a Path),
+}
+
+pub fn run(
+    profile_dirs: &[PathBuf],
+    passes: &[&dyn Pass],
+    opts: &Options,
+    locks_of: Locks<'_>,
+) -> io::Result<Report> {
     // Sorted order, so two concurrent runs cannot take the same locks in opposite order.
     let mut dirs = profile_dirs.to_vec();
     dirs.sort();
@@ -181,14 +200,25 @@ pub fn run(profile_dirs: &[PathBuf], passes: &[&dyn Pass], opts: &Options) -> io
     let mut report = Report::default();
     let mut locks = Vec::new();
     let mut locked = Vec::new();
-    for dir in dirs {
-        match ProfileLock::try_acquire(&dir)? {
+    match locks_of {
+        Locks::PerDir => {
+            for dir in dirs {
+                match ProfileLock::try_acquire(&dir)? {
+                    Some(lock) => {
+                        locks.push(lock);
+                        locked.push(dir);
+                    }
+                    None => report.busy.push(dir),
+                }
+            }
+        }
+        Locks::Shared(file) => match ProfileLock::try_lock_file(file)? {
             Some(lock) => {
                 locks.push(lock);
-                locked.push(dir);
+                locked = dirs;
             }
-            None => report.busy.push(dir),
-        }
+            None => report.busy = dirs,
+        },
     }
 
     let mut profiles = scan_all(&locked)?;

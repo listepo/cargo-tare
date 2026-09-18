@@ -9,6 +9,7 @@ sizes and the same freshness result, and is quoted where the two disagree. The r
 
 ```
 scripts/bench.sh ~/GitHub/listepo/apps/ketch          # RUNS=5 WITH_SCCACHE=1 by default
+scripts/bench-cargo-home.sh                           # the cargo home, on a clone of it
 ```
 
 The script shallow-clones the workspace into a temp dir and adds one git worktree of that clone,
@@ -86,6 +87,37 @@ Right after both passes, with nothing rebuilt in between, running the tool again
 **46** more actions (2.7 s). Dedupe's clones are new files that compress had never seen, so one
 pipeline run does not reach a fixed point. Nothing is lost by it — the next scheduled run picks
 them up — but a `run` that loops until it stops finding work would finish the job in one go.
+
+## The cargo home
+
+`scripts/bench-cargo-home.sh` (`just bench-home`) measures `--cargo-home` the same way, on a
+**clone** of this machine's `~/.cargo`: `cp -c -R` of `registry` and `git` into a temp dir, which
+on APFS costs no space and only ever reads the real home. The tool is pointed at the clone.
+
+| | `du` before | `du` after | delta |
+| --- | --- | --- | --- |
+| `registry/src` (unpacked sources) | 1.52 GiB | 469 MiB | **−1.06 GiB (−69.2%)** |
+| `registry/cache` (`.crate` archives) | 213.6 MiB | 213.6 MiB | 0, never touched |
+
+44.5 s for 1.52 GiB, one `.package-cache` lock for the whole pass. The sources compress better
+than a target does (69% against 64%): they are almost entirely text, while a target is mostly
+object files that already carry incompressible sections.
+
+Then the question the pass lives or dies by — does cargo unpack anything again? The script builds
+a crate from the clone (`libc-0.2.189`), runs the pass, deletes the build target and builds
+again with `--offline`:
+
+| | |
+| --- | --- |
+| `.cargo-ok` inode, mtime and size after the pass | unchanged |
+| units not fresh on the build after the pass | **0** |
+
+Nothing is re-extracted and nothing is rebuilt, which is the same result the fixture test asserts
+file by file. What the compression backend refused is the usual tail: test fixtures and images
+inside the crates (`tests/images/`, `res/`), reported as "not compressible enough".
+
+`git/checkouts` was 0 here — this machine has no git dependencies — so that half is covered by
+the fixture test only.
 
 ## sccache, for comparison
 

@@ -4,7 +4,7 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use cargo_tare::engine::{self, Options, Report};
+use cargo_tare::engine::{self, Locks, Options, Report};
 use cargo_tare::evict::{self, Evict, Limits};
 use cargo_tare::inventory;
 use cargo_tare::model::CARGO_LOCK_FILE;
@@ -48,7 +48,7 @@ fn run(root: &Path, limits: Limits, opts: &Options) -> Report {
             .collect();
         let dirs: Vec<PathBuf> = profiles.iter().map(|profile| profile.dir.clone()).collect();
         let pass = Evict::new(evict::select(&profiles, now_unix(), limits));
-        engine::run(&dirs, &[&pass], opts).unwrap()
+        engine::run(&dirs, &[&pass], opts, Locks::PerDir).unwrap()
     })
 }
 
@@ -123,8 +123,15 @@ fn a_profile_built_after_the_inventory_is_kept() {
 
     // A build slips in between the inventory and our lock.
     fs::write(old.join("fresh-artifact"), b"new").unwrap();
-    let report =
-        run_unbusy(|| engine::run(std::slice::from_ref(&old), &[&pass], &named()).unwrap());
+    let report = run_unbusy(|| {
+        engine::run(
+            std::slice::from_ref(&old),
+            &[&pass],
+            &named(),
+            Locks::PerDir,
+        )
+        .unwrap()
+    });
 
     assert_eq!(report.passes[0].planned, 0, "{report:?}");
     assert!(old.join("deps/libx.rlib").exists());

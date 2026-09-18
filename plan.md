@@ -7,7 +7,6 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
-| T14 | todo | P1 | 3 | 0% | |
 | T15 | todo | P2 | 3 | 0% | |
 | T18 | todo | P3 | 3 | 0% | |
 
@@ -16,21 +15,6 @@ Blockers: none. Everything is free to start: the engine (`src/engine.rs`), the i
 (`src/index.rs`) and the test harness with the freshness oracle (`tests/common/mod.rs`) exist.
 T13–T18 were added from the competitor review in `docs/research.md`; each card says which tool
 does the same thing today.
-
-### T14. Compress and report the cargo home
-
-`~/.cargo/registry/src` holds every dependency's unpacked sources — plain text, the most
-compressible bytes on the machine — and `git/checkouts` the same for git dependencies. No
-competitor compresses them: `cargo-cache` and `cargo-trim` only delete, and cargo's own
-`cache.auto-clean-frequency` (stable since 1.88) only evicts by age. Compression is lossless
-here in the strongest sense: the files are a cache of immutable, re-downloadable sources.
-
-Scope: `status` reports the cargo home's size next to the targets; `run` compresses
-`registry/src` and `git/checkouts` when `--cargo-home` is given. Must take cargo's own lock
-(`$CARGO_HOME/.package-cache`) for the length of the pass, the way the engine takes
-`.cargo-lock` per profile, and must leave `registry/cache` (already compressed `.crate` files)
-alone. Done: measured ratio in `docs/bench.md`, a `cargo build` after the pass does not
-re-extract anything, and the pass refuses to run while another cargo holds the package lock.
 
 ### T15. Lossy pass: `orphan-toolchain` report
 

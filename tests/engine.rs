@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
 
-use cargo_tare::engine::{self, Action, Options, Pass, Replace, Report, Skip};
+use cargo_tare::engine::{self, Action, Locks, Options, Pass, Replace, Report, Skip};
 use cargo_tare::model::{self, CARGO_LOCK_FILE, Profile, TMP_PREFIX};
 use tempfile::TempDir;
 
@@ -54,7 +54,7 @@ fn replace_by_name(profiles: &[Profile], source: &str, member: &str) -> Vec<Acti
 }
 
 fn run(profile: &Path, passes: &[&dyn Pass], opts: &Options) -> Report {
-    run_unbusy(|| engine::run(&[profile.to_path_buf()], passes, opts).unwrap())
+    run_unbusy(|| engine::run(&[profile.to_path_buf()], passes, opts, Locks::PerDir).unwrap())
 }
 
 fn run_replace(profile: &Path, opts: &Options) -> Report {
@@ -305,7 +305,12 @@ fn running_build_is_not_disturbed_and_replaced_artifacts_stay_fresh() {
     while !seen_busy && build.try_wait().unwrap().is_none() {
         assert!(started.elapsed() < BUSY_TIMEOUT);
         // Err: cargo has not created the lock file yet.
-        if let Ok(report) = engine::run(std::slice::from_ref(&profile), &[], &Options::default()) {
+        if let Ok(report) = engine::run(
+            std::slice::from_ref(&profile),
+            &[],
+            &Options::default(),
+            Locks::PerDir,
+        ) {
             seen_busy = !report.busy.is_empty();
         }
         std::thread::sleep(POLL);

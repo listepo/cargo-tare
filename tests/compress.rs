@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime};
 
 use cargo_tare::compress::{Compress, DEFAULT_MIN_AGE, DEFAULT_MIN_SIZE};
 use cargo_tare::dedupe::Dedupe;
-use cargo_tare::engine::{self, Options, PassReport, Skip, UF_COMPRESSED};
+use cargo_tare::engine::{self, Locks, Options, PassReport, Skip, UF_COMPRESSED};
 use cargo_tare::index::{HASH_BYTES, HashIndex};
 use cargo_tare::model::{CARGO_LOCK_FILE, Stamp, TMP_PREFIX};
 use tempfile::TempDir;
@@ -88,8 +88,15 @@ fn run(dirs: &[PathBuf], index: &RefCell<HashIndex>, min_age: Duration) -> Outco
     let (mut compress, mut dedupe) = (Compress::new(index), Dedupe::new(index));
     compress.min_age = min_age;
     dedupe.min_age = min_age;
-    let mut report =
-        run_unbusy(|| engine::run(dirs, &[&compress, &dedupe], &Options::default()).unwrap());
+    let mut report = run_unbusy(|| {
+        engine::run(
+            dirs,
+            &[&compress, &dedupe],
+            &Options::default(),
+            Locks::PerDir,
+        )
+        .unwrap()
+    });
     assert!(report.busy.is_empty());
     let dedupe_report = report.passes.remove(1);
     Outcome {
@@ -248,7 +255,7 @@ fn a_compressed_file_keeps_its_hash_in_the_index() {
     let index = RefCell::default();
     let mut dedupe = Dedupe::new(&index);
     dedupe.min_age = Duration::ZERO;
-    run_unbusy(|| engine::run(&dirs, &[&dedupe], &Options::default()).unwrap());
+    run_unbusy(|| engine::run(&dirs, &[&dedupe], &Options::default(), Locks::PerDir).unwrap());
     assert_eq!(dedupe.hashed(), 2);
 
     let outcome = run(&dirs, &index, Duration::ZERO);

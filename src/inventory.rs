@@ -58,6 +58,9 @@ pub struct Target {
 pub struct Inventory {
     /// Sorted by family, then by allocated size, largest first.
     pub targets: Vec<Target>,
+    /// Only when asked for: reading the cargo home costs another full walk.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cargo_home: Option<crate::cargo_home::Stats>,
 }
 
 /// Cargo target and build dirs under `roots`. A found target is not entered.
@@ -118,7 +121,10 @@ pub fn inventory(roots: &[PathBuf]) -> io::Result<Inventory> {
     targets.sort_by(|a, b| {
         (&a.family, b.allocated_bytes, &a.root).cmp(&(&b.family, a.allocated_bytes, &b.root))
     });
-    Ok(Inventory { targets })
+    Ok(Inventory {
+        targets,
+        cargo_home: None,
+    })
 }
 
 /// Totals of one target, plus allocated bytes per file size for the dedupe estimate.

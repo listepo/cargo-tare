@@ -8,7 +8,8 @@ Arguments:
   [ROOT]...  Dirs to search; a target dir itself works too [default: .]
 
 Options:
-      --json  Print the inventory as JSON
-  -h, --help  Print help
+      --json                Print the inventory as JSON
+      --cargo-home [<DIR>]  Also measure the cargo home's unpacked sources, which costs another walk [default: $CARGO_HOME, else ~/.cargo]
+  -h, --help                Print help
 
 ```

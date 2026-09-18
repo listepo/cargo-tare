@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use cargo_tare::dedupe::{DEFAULT_MIN_SIZE, Dedupe};
-use cargo_tare::engine::{self, Options, PassReport};
+use cargo_tare::engine::{self, Locks, Options, PassReport};
 use cargo_tare::index::HashIndex;
 use cargo_tare::model::CARGO_LOCK_FILE;
 use tempfile::TempDir;
@@ -47,7 +47,8 @@ fn run(dirs: &[PathBuf], index: &Path, min_age: Duration) -> (PassReport, usize)
     let cache = RefCell::new(HashIndex::load(index));
     let mut dedupe = Dedupe::new(&cache);
     dedupe.min_age = min_age;
-    let mut report = run_unbusy(|| engine::run(dirs, &[&dedupe], &Options::default()).unwrap());
+    let mut report =
+        run_unbusy(|| engine::run(dirs, &[&dedupe], &Options::default(), Locks::PerDir).unwrap());
     assert!(report.busy.is_empty());
     let hashed = dedupe.hashed();
     cache.borrow().save(index).unwrap();

@@ -450,12 +450,37 @@ target is busy. That is the same guard `orphans` and whole-target eviction use, 
 The size comes from the inventory (`Target::doc_bytes`), since the engine itself scans only
 profile dirs. The build oracle is untouched by it: after the pass cargo reports nothing stale.
 
+## Cargo home (`src/cargo_home.rs`)
+
+The registry sources are the one big pile of compressible text outside the targets: every crate
+cargo builds is unpacked there once and then only read. `--cargo-home` treats it as one more
+group, with two differences from a target.
+
+- **Only `compress` runs.** Nothing there is a build artifact: there is nothing to dedupe against,
+  nothing stale to evict. The two dirs it touches are `registry/src` and `git/checkouts` — the
+  extracted sources. `registry/cache` (the `.crate` archives) and `registry/index` are left alone;
+  the archives are already compressed, and the index is cargo's own cache to invalidate.
+- **One lock for the whole group, not one per dir.** Cargo does not write `.cargo-lock` files
+  there; what it holds while it fetches or extracts is `<home>/.package-cache`. So
+  `engine::run(..., Locks::Shared(&lock))` takes that one file lock and either all the dirs are
+  ours or none are, which is also why a home cargo has never used (no `.package-cache`) is refused
+  rather than locked into existence.
+
+What decides whether cargo re-extracts a crate is `.cargo-ok` and the files beside it, and
+compression changes neither the content nor the mtime of any of them — the test asserts that over
+every file in a fake home, and the benchmark confirms it against a real one by rebuilding
+afterwards. The flag takes an optional value: `--cargo-home` alone resolves `CARGO_HOME`, else
+`$HOME/.cargo`. `status --cargo-home` reports the same dirs without touching them, and is opt-in
+because measuring them costs a second full walk.
+
 ## CLI surface
 
 ```
-cargo tare status [--json] [ROOT]...  # inventory, families, potential savings; read-only
+cargo tare status [--json] [--cargo-home [DIR]] [ROOT]...  # inventory, families, potential
+                                                          # savings; read-only
 cargo tare run [--dry-run] [--lossy <PASS>]... [--index <FILE>] [<ROOT>]...
                [--config <FILE>] [--json]          # file: see below; json: the report as data
+               [--cargo-home [DIR]]                # compress the registry sources too
                [--evict-idle-days <N>] [--evict-max-total-gib <N>]   # with --lossy evict
                [--evict-whole-target]                                # with --lossy evict
                [--incremental-idle-days <N>]        # with --lossy incremental

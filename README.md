@@ -41,6 +41,7 @@ Works today:
 
 ```
 cargo tare status ~/code            # read-only: every target under the root
+cargo tare status --cargo-home ~/code  # and what the registry sources weigh
 cargo tare status --json ~/code
 cargo tare run --dry-run ~/code     # plan only
 cargo tare run ~/code
@@ -49,6 +50,7 @@ cargo tare run [--dry-run] [--pass <PASS>]... [--lossy <PASS>]... [--index <FILE
 cargo tare advise ~/code            # read-only: what makes these targets bigger
 cargo tare seed [--from <DIR>] [--dry-run] [--index <FILE>] [<DIR>]
               [--min-age <SECS>] [--min-size <BYTES>]
+cargo tare run --cargo-home ~/code     # and the registry sources in ~/.cargo
 cargo tare run --dry-run --lossy orphans ~/code
 cargo tare run --dry-run --lossy evict --evict-idle-days 30 ~/code
 cargo tare run --lossy evict --evict-max-total-gib 50 ~/code
@@ -117,6 +119,19 @@ Add `--evict-whole-target` and a target whose every profile dir is being evicted
 shell. One profile with a build running, or one built since the run started looking, keeps the
 target dir and the free profiles are evicted on their own. Only `target/` is ever removed; the
 sources next to it are not.
+
+`--cargo-home [DIR]` adds the cargo home to the run as a group of its own: the extracted
+registry sources (`registry/src`) and git checkouts (`git/checkouts`) are compressed like any
+other stable artifact. Without a value the flag resolves `CARGO_HOME`, else `~/.cargo`. Only
+compress runs there — the `.crate` archives in `registry/cache` and cargo's `registry/index` are
+left alone — and the whole group is taken under cargo's own `<home>/.package-cache` lock, so a
+running `cargo fetch` stops the pass instead of racing it. Nothing is deleted and no file's
+content or mtime changes, which is what decides whether cargo unpacks a crate again; it does not.
+Measured on a clone of a real home (`docs/bench.md`): 1.52 GiB of registry sources down to
+469 MiB, 69% off, and the build afterwards reports nothing stale and unpacks nothing again.
+The run needs no target dirs of its own, so `cargo tare run --cargo-home` alone is a valid run,
+and `cargo tare status --cargo-home` reports the same dirs without touching them (it is opt-in
+because measuring them costs a second walk).
 
 **advise** changes nothing: it reads the manifests and cargo configs of the projects it finds
 and names what makes their targets bigger than they need to be — full debuginfo where

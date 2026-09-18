@@ -5,7 +5,7 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Command as Process, Stdio};
 
-use cargo_tare::engine::{self, Options, Pass, Report};
+use cargo_tare::engine::{self, Locks, Options, Pass, Report};
 use cargo_tare::inventory;
 use cargo_tare::model::CARGO_LOCK_FILE;
 use cargo_tare::orphans::{self, Orphan, Orphans};
@@ -77,7 +77,13 @@ fn named() -> Options {
 fn run(root: &Path, opts: &Options) -> Report {
     run_unbusy(|| {
         let inventory = inventory::inventory(&[root.to_path_buf()]).unwrap();
-        engine::run(&profile_dirs(&inventory), &[&chosen(&inventory)], opts).unwrap()
+        engine::run(
+            &profile_dirs(&inventory),
+            &[&chosen(&inventory)],
+            opts,
+            Locks::PerDir,
+        )
+        .unwrap()
     })
 }
 
@@ -171,7 +177,7 @@ fn a_worktree_registered_again_after_the_inventory_is_kept() {
     // `git worktree repair` runs between the inventory and our lock.
     fs::rename(root.join("record-stash"), record(&root)).unwrap();
     let dirs = profile_dirs(&inventory);
-    let report = run_unbusy(|| engine::run(&dirs, &[&pass], &named()).unwrap());
+    let report = run_unbusy(|| engine::run(&dirs, &[&pass], &named(), Locks::PerDir).unwrap());
 
     assert_eq!(report.passes[0].planned, 0, "{report:?}");
     assert!(wt.join("deps/libx.rlib").exists());

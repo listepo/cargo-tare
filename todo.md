@@ -1,3 +1,2 @@
-- T14. Compress and report the cargo home
 - T15. Lossy pass: `orphan-toolchain` report
 - T18. Dedupe across families

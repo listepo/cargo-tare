@@ -6,11 +6,12 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, ensure};
 use cargo_tare::advise::{self, Kind};
+use cargo_tare::cargo_home;
 use cargo_tare::compress::{self, Compress};
 use cargo_tare::config::{self, Config};
 use cargo_tare::dedupe::{self, Dedupe};
 use cargo_tare::doc::{self, Doc, Docs};
-use cargo_tare::engine::{self, Options, Pass};
+use cargo_tare::engine::{self, Locks, Options, Pass};
 use cargo_tare::evict::{self, Evict, Limits};
 use cargo_tare::incremental::{self, Incremental};
 use cargo_tare::index::HashIndex;
@@ -59,6 +60,10 @@ enum Cmd {
         /// Print the inventory as JSON
         #[arg(long)]
         json: bool,
+        /// Also measure the cargo home's unpacked sources, which costs another walk
+        /// [default: $CARGO_HOME, else ~/.cargo]
+        #[arg(long, value_name = "DIR", num_args = 0..=1, default_missing_value = "")]
+        cargo_home: Option<PathBuf>,
         /// Dirs to search; a target dir itself works too [default: .]
         #[arg(value_name = "ROOT")]
         roots: Vec<PathBuf>,
@@ -125,6 +130,10 @@ struct RunArgs {
     /// Leave files smaller than this alone; both lossless passes [default: 8192 / 4096]
     #[arg(long, value_name = "BYTES")]
     min_size: Option<u64>,
+    /// Also compress the cargo home's unpacked sources (`registry/src`, `git/checkouts`)
+    /// under cargo's own `.package-cache` lock [default: $CARGO_HOME, else ~/.cargo]
+    #[arg(long, value_name = "DIR", num_args = 0..=1, default_missing_value = "")]
+    cargo_home: Option<PathBuf>,
     /// Content-hash cache [default: ~/.cache/cargo-tare/hashes-v1.bin]
     #[arg(long, value_name = "FILE")]
     index: Option<PathBuf>,
@@ -142,7 +151,11 @@ struct RunArgs {
 fn main() -> ExitCode {
     let Cargo::Tare(Tare { cmd }) = Cargo::parse();
     let done = match cmd {
-        Cmd::Status { json, roots } => status(json, roots).map(|()| Done::Everything),
+        Cmd::Status {
+            json,
+            cargo_home,
+            roots,
+        } => status(json, cargo_home, roots).map(|()| Done::Everything),
         Cmd::Advise { json, roots } => advise(json, roots).map(|()| Done::Everything),
         Cmd::Run(args) => run(args),
         Cmd::Seed {
@@ -186,7 +199,7 @@ fn gib(bytes: u64) -> String {
     format!("{:.2} GiB", bytes as f64 / BYTES_PER_GIB)
 }
 
-fn status(json: bool, mut roots: Vec<PathBuf>) -> Result<()> {
+fn status(json: bool, home: Option<PathBuf>, mut roots: Vec<PathBuf>) -> Result<()> {
     if roots.is_empty() {
         // The same `roots` key `run` uses; `.` stays the fallback when there is none.
         roots = match config::default_path() {
@@ -194,7 +207,12 @@ fn status(json: bool, mut roots: Vec<PathBuf>) -> Result<()> {
             None => Vec::new(),
         };
     }
-    let inventory = read_inventory(roots)?;
+    let mut inventory = read_inventory(roots)?;
+    if let Some(home) =
+        home.and_then(|flag| cargo_home::path((!flag.as_os_str().is_empty()).then_some(flag)))
+    {
+        inventory.cargo_home = Some(cargo_home::inspect(&home)?);
+    }
     if json {
         println!("{}", serde_json::to_string_pretty(&inventory)?);
         return Ok(());
@@ -226,6 +244,14 @@ fn status(json: bool, mut roots: Vec<PathBuf>) -> Result<()> {
         gib(sum(|t| t.allocated_bytes)),
         gib(sum(|t| t.logical_bytes))
     );
+    if let Some(home) = &inventory.cargo_home {
+        println!(
+            "cargo home {}: {} on disk, not compressed yet: {}",
+            home.home.display(),
+            gib(home.allocated_bytes),
+            gib(home.compressible_bytes)
+        );
+    }
     println!(
         "orphaned worktrees: {}; not compressed yet: {}; dedupe candidates (upper bound): {}",
         gib(sum(|t| if t.orphaned { t.allocated_bytes } else { 0 })),
@@ -462,12 +488,21 @@ fn run(args: RunArgs) -> Result<Done> {
     } else {
         args.roots
     };
+    // `--cargo-home` is a run of its own: it needs no target and no root.
+    let only_home = roots.is_empty() && args.cargo_home.is_some();
     ensure!(
-        !roots.is_empty(),
+        !roots.is_empty() || only_home,
         "no roots: name them on the command line or set `roots` in the config file"
     );
-    let inventory = read_inventory(roots)?;
-    ensure!(!inventory.targets.is_empty(), "no cargo target dirs found");
+    let inventory = if only_home {
+        Inventory::default()
+    } else {
+        read_inventory(roots)?
+    };
+    ensure!(
+        !inventory.targets.is_empty() || only_home,
+        "no cargo target dirs found"
+    );
     // The size cap is global, so eviction is decided over everything under the roots at once.
     let profiles: Vec<ProfileInfo> = inventory
         .targets
@@ -528,10 +563,47 @@ fn run(args: RunArgs) -> Result<Done> {
         if !args.json {
             println!("{}", group.display());
         }
-        let report = engine::run(profile_dirs, &passes, &opts)?;
+        let report = engine::run(profile_dirs, &passes, &opts, Locks::PerDir)?;
         left_busy |= !report.busy.is_empty();
         if args.json {
             reports.push((group.as_path(), report));
+        } else {
+            print_report(&report, opts.dry_run);
+        }
+    }
+    // One more group, guarded by cargo's own home lock instead of per-profile locks. Only
+    // `compress` runs here: these are unpacked sources, not build output.
+    let home = args
+        .cargo_home
+        .and_then(|flag| cargo_home::path((!flag.as_os_str().is_empty()).then_some(flag)));
+    if let Some(home) = &home {
+        let dirs = cargo_home::dirs(home);
+        ensure!(
+            !dirs.is_empty(),
+            "no {} or {} in {}",
+            cargo_home::DIRS[0],
+            cargo_home::DIRS[1],
+            home.display()
+        );
+        let lock = home.join(cargo_home::LOCK_FILE);
+        ensure!(
+            lock.is_file(),
+            "no {} in {}: cargo has never used it as its home",
+            cargo_home::LOCK_FILE,
+            home.display()
+        );
+        if !args.json {
+            println!("{}", home.display());
+        }
+        let only_compress: Vec<&dyn Pass> = passes
+            .iter()
+            .copied()
+            .filter(|pass| pass.name() == compress::NAME)
+            .collect();
+        let report = engine::run(&dirs, &only_compress, &opts, Locks::Shared(&lock))?;
+        left_busy |= !report.busy.is_empty();
+        if args.json {
+            reports.push((home.as_path(), report));
         } else {
             print_report(&report, opts.dry_run);
         }

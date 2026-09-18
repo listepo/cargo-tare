@@ -601,3 +601,55 @@ mtimes and modes intact); (f) `sha2` first (hardware SHA-256 1484 MB/s), `blake3
 needed yet. The `ditto` section compressed nothing and was replaced by `t2-spike-e8.sh`. Left
 open: `applesauce` did not compress a single 119 MB blob (goes to T6), decompression cost at link
 time (goes to T11). Results table: `DESIGN.md`, "T2 spike results". Raw output: `docs/spike/`.
+
+### T14. Compress and report the cargo home
+
+`~/.cargo/registry/src` holds every dependency's unpacked sources — plain text, the most
+compressible bytes on the machine — and `git/checkouts` the same for git dependencies. No
+competitor compresses them: `cargo-cache` and `cargo-trim` only delete, and cargo's own
+`cache.auto-clean-frequency` (stable since 1.88) only evicts by age. Compression is lossless
+here in the strongest sense: the files are a cache of immutable, re-downloadable sources.
+
+Scope: `status` reports the cargo home's size next to the targets; `run` compresses
+`registry/src` and `git/checkouts` when `--cargo-home` is given. Must take cargo's own lock
+(`$CARGO_HOME/.package-cache`) for the length of the pass, the way the engine takes
+`.cargo-lock` per profile, and must leave `registry/cache` (already compressed `.crate` files)
+alone. Done: measured ratio in `docs/bench.md`, a `cargo build` after the pass does not
+re-extract anything, and the pass refuses to run while another cargo holds the package lock.
+
+Plan: `engine::run` gains a `Locks` argument — `PerDir` (today's behaviour, one `.cargo-lock` per
+dir) or `Shared(path)`, one lock file for every dir at once, which is what
+`$CARGO_HOME/.package-cache` is. `src/cargo_home.rs` finds the home (`CARGO_HOME`, else
+`~/.cargo`), lists the dirs worth compressing (`registry/src`, `git/checkouts`, never
+`registry/cache`) and inspects them for `status`. `run --cargo-home` then runs the existing
+`compress` pass over those dirs as one more group in the report. Verify: `tests/cargo_home.rs`
+over a fake home in a temp dir — an A/B with `--cargo-home` the only difference, `registry/cache`
+untouched, every file byte-identical with its mtime after the pass (which is what decides whether
+cargo re-extracts), and a held `.package-cache` leaving everything alone with exit 2. Bench on a
+clone of a subset of the real home, never on the home itself.
+
+Outcome: done. `src/cargo_home.rs` finds the home (`--cargo-home [DIR]` → `CARGO_HOME` →
+`$HOME/.cargo`), lists the dirs worth compressing (`registry/src`, `git/checkouts`) and inspects
+them for `status --cargo-home`, which stays opt-in because it costs a second full walk.
+`engine::run` gained a `Locks` argument: `PerDir` is what every target group uses, `Shared(path)`
+takes one lock for the whole group — `<home>/.package-cache`, the file cargo itself holds while
+it fetches or extracts, since it writes no `.cargo-lock` there. A home cargo has never used (no
+`.package-cache`) is refused rather than locked into existence, and `run --cargo-home` with no
+roots at all is a valid run.
+
+Only `compress` runs on the home: there is nothing to dedupe against and nothing stale to evict.
+`registry/cache` (the `.crate` archives) and `registry/index` are left alone.
+
+Measured (`docs/bench.md`, `scripts/bench-cargo-home.sh` / `just bench-home`, on an APFS clone of
+the real home — never on the home itself): 1.52 GiB of registry sources → 469 MiB, −69.2%, in
+44.5 s; `registry/cache` unchanged to the byte. The re-extraction criterion is answered twice:
+the benchmark rebuilds a crate from the clone after the pass and cargo reports 0 units not fresh
+with `.cargo-ok` unchanged in inode, mtime and size, and `tests/cargo_home.rs` asserts content
+and mtime over every file in a fake home. `git/checkouts` was empty on this machine — that half
+rests on the fixture test alone.
+
+Tests (`tests/cargo_home.rs`, 6): the A/B with `--cargo-home` as the only difference, the packed
+crates left alone, a held `.package-cache` giving exit 2 with nothing touched, a dry run
+reporting the home as its own group with only `compress` in it, `status` measuring the home only
+when asked, and a home without `.package-cache` refused.
+
