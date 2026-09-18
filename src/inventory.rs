@@ -12,8 +12,8 @@ use walkdir::WalkDir;
 
 use crate::compress::DEFAULT_MIN_SIZE as COMPRESS_MIN_SIZE;
 use crate::dedupe::DEFAULT_MIN_SIZE as DEDUPE_MIN_SIZE;
-use crate::engine::UF_COMPRESSED;
 use crate::model;
+use crate::sys::COMPRESSED;
 
 const GITDIR_KEY: &str = "gitdir:";
 const WORKTREES_DIR: &str = "worktrees";
@@ -184,7 +184,7 @@ fn inspect(root: &Path) -> io::Result<(Target, HashMap<u64, u64>)> {
                 target.incremental_bytes += inode.allocated;
             }
         }
-        if inode.flags & UF_COMPRESSED != 0 {
+        if inode.flags & COMPRESSED != 0 {
             target.compressed_bytes += inode.allocated;
         } else if inode.stamp.size >= COMPRESS_MIN_SIZE {
             target.compressible_bytes += inode.allocated;

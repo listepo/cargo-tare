@@ -752,3 +752,35 @@ new inode sharing the old one's blocks, which is what an inode check has to asse
 bytes and its mtime are not; without it nothing moves; and all four builds are still fresh
 afterwards. A second test checks the report names one group instead of two.
 
+### T19. Platform layer: build and run on Linux and Windows
+
+The tool was macOS-only, and not by design: `model.rs`, `engine.rs`, `seed.rs` and the two
+lossless passes reached for `std::os::unix::fs::MetadataExt` (`dev`, `ino`, `nlink`, `blocks`,
+`st_flags`) and for macOS's `clonefile` and `UF_COMPRESSED` directly. Windows has none of those
+names, so the crate did not compile there at all.
+
+Blocker for T20 and T21: `src/sys/` now owns every platform primitive — `file_id`, `nlink`,
+`allocated`, `flags`, `mode`/`set_mode`, `symlink`, `clone_file`, a `Compressor` — plus the two
+capability constants `CAN_CLONE` and `CAN_COMPRESS`, with one file per platform picked by
+`#[cfg_attr(..., path = ...)]`. macOS kept exactly what it had; `applesauce` became a macOS-only
+dependency. `Dedupe::plan` and `Compress::plan` return an empty plan when their capability is
+false, before reading a single file: a clone the filesystem cannot share is a second copy of the
+bytes, and a compress pass with no backend would clone every candidate only to throw the copy
+away.
+
+Outcome: `cargo check` is green for `x86_64-unknown-linux-gnu` and `x86_64-pc-windows-msvc`
+(`just check-cross`), the macOS suite is unchanged and green, and no `std::os` import is left in
+`src/` outside `src/sys/`. Three unit tests in `src/sys/mod.rs` state the facts that must hold on
+every platform (a file has an identity of its own and a size on disk, a clone holds the bytes of
+its source, an empty batch costs nothing), so they are what a port has to satisfy; the
+integration suite still runs only where the machine is.
+
+Honest about what the other two platforms do today: nothing but report. Both capabilities are
+false on Linux and Windows, because a clone there depends on the filesystem under the root
+(btrfs and XFS reflink, ext4 does not; ReFS clones, NTFS does not) and that is a runtime probe,
+which is T20 and T21. Windows takes file identity from the path, so hardlinks read as separate
+files and the link count always reads 1 — consistent within the model and inert while nothing is
+planned, replaced by `GetFileInformationByHandle` in T21; sizes there are logical, not on-disk,
+until `GetCompressedFileSize`. `seed` works on all three: where blocks are shared the copy is
+free, where they are not it costs the disk and still saves the build. The test suite stayed
+macOS-only, so the tests in `src/sys/` are a contract for the ports rather than proof they run.

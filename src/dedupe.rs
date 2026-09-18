@@ -10,9 +10,10 @@ use std::time::{Duration, SystemTime};
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
-use crate::engine::{Action, Pass, Replace, UF_COMPRESSED};
+use crate::engine::{Action, Pass, Replace};
 use crate::index::{Hash, HashIndex};
 use crate::model::{Inode, Profile, Stamp};
+use crate::sys::{CAN_CLONE, COMPRESSED};
 
 /// One APFS block. A smaller file occupies one block either way; nothing to gain.
 pub const NAME: &str = "dedupe";
@@ -48,7 +49,7 @@ impl<'a> Dedupe<'a> {
     fn eligible(&self, inode: &Inode, now: SystemTime) -> bool {
         inode.stamp.size >= self.min_size
             && inode.nlink == inode.paths.len() as u64
-            && inode.flags & !UF_COMPRESSED == 0
+            && inode.flags & !COMPRESSED == 0
             && now
                 .duration_since(inode.stamp.mtime)
                 .is_ok_and(|age| age >= self.min_age)
@@ -61,6 +62,11 @@ impl Pass for Dedupe<'_> {
     }
 
     fn plan(&self, profiles: &[Profile]) -> Vec<Action> {
+        // Without copy-on-write a "clone" is a second copy of the bytes: the same disk for more
+        // churn. Nothing to plan, and nothing is read to find it out.
+        if !CAN_CLONE {
+            return Vec::new();
+        }
         let now = SystemTime::now();
         // A file whose size is unique on its device has no twin: never read it.
         let mut by_size: HashMap<(u64, u64), Vec<&Inode>> = HashMap::new();
@@ -147,7 +153,7 @@ impl Pass for Dedupe<'_> {
 /// which is how dedupe and compress add up instead of fighting), then the oldest.
 fn canonical_order<'a>(entry: &(&'a Inode, bool)) -> (bool, bool, SystemTime, &'a Path) {
     let (inode, shared) = *entry;
-    let compressed = inode.flags & UF_COMPRESSED != 0;
+    let compressed = inode.flags & COMPRESSED != 0;
     (
         !shared,
         !compressed,
@@ -193,7 +199,7 @@ mod tests {
     #[test]
     fn canonical_is_shared_then_compressed_then_oldest() {
         let (old, new) = (inode("old", 0, 1), inode("new", 0, 2));
-        let compressed = inode("compressed", UF_COMPRESSED, 3);
+        let compressed = inode("compressed", COMPRESSED, 3);
         let shared = inode("shared", 0, 4);
         let mut group = [
             (&new, false),

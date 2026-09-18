@@ -1,10 +1,10 @@
-//! `cargo tare seed`: give a fresh checkout a target dir cloned from a sibling's. On APFS
-//! `fs::copy` is `clonefile`, so the copy shares every block with its source until one of them
-//! is rewritten: a new worktree starts with a warm target and costs no disk space.
+//! `cargo tare seed`: give a fresh checkout a target dir cloned from a sibling's. Where the
+//! filesystem shares blocks (APFS, btrfs, XFS) the copy costs nothing until one side is
+//! rewritten, and the new worktree starts with a warm target for free. Where it does not, the
+//! copy is a real one: it still saves the build, it no longer saves the disk.
 
 use std::fs;
 use std::io;
-use std::os::unix::fs::{MetadataExt, symlink};
 use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
@@ -12,7 +12,8 @@ use walkdir::WalkDir;
 use crate::engine::ProfileLock;
 use crate::index::HashIndex;
 use crate::inventory;
-use crate::model::{self, CARGO_LOCK_FILE, ST_BLOCK_BYTES, Stamp, TMP_PREFIX};
+use crate::model::{self, CARGO_LOCK_FILE, Stamp, TMP_PREFIX};
+use crate::sys;
 
 /// Cargo's own name for the incremental cache; seeding it would copy a cache that belongs to
 /// another checkout's build and that cargo will not use.
@@ -25,9 +26,9 @@ pub struct Seeded {
     pub source: PathBuf,
     pub files: usize,
     pub symlinks: usize,
-    /// Allocated bytes of what was copied, as `du` reports it. The clones share these blocks
-    /// with the source, so the volume loses nothing; this is what the new target will appear
-    /// to weigh.
+    /// Allocated bytes of what was copied, as `du` reports it. Where the copies are clones
+    /// they share these blocks with the source and the volume loses nothing; this is what the
+    /// new target will appear to weigh either way.
     pub bytes: u64,
     /// Profile dirs of the source that a build held; nothing under them was copied.
     pub busy: Vec<PathBuf>,
@@ -126,16 +127,17 @@ pub fn seed(
         } else if kind.is_symlink() {
             seeded.symlinks += 1;
             if !dry_run {
-                symlink(fs::read_link(entry.path())?, &to)?;
+                sys::symlink(&fs::read_link(entry.path())?, &to)?;
             }
         } else {
             let metadata = entry.metadata()?;
             seeded.files += 1;
-            seeded.bytes += metadata.blocks() * ST_BLOCK_BYTES;
+            seeded.bytes += sys::allocated(&metadata);
             if !dry_run {
-                // `clonefile` on APFS: the copy shares the blocks until one side is written.
-                fs::copy(entry.path(), &to)?;
-                register(index, &metadata, &to);
+                // A clone where the filesystem has them: the copy shares the blocks until
+                // one side is written.
+                sys::clone_file(entry.path(), &to)?;
+                register(index, entry.path(), &metadata, &to);
             }
         }
     }
@@ -145,8 +147,8 @@ pub fn seed(
 /// Both sides of a clone hold the same bytes, so the copy inherits the source's hash and both
 /// are marked shared. A source the index has never hashed stays unknown: seeding must not read
 /// gigabytes to fill an index that the next `run` fills anyway.
-fn register(index: &mut HashIndex, source: &fs::Metadata, copy: &Path) {
-    let Ok(from) = Stamp::of(source) else {
+fn register(index: &mut HashIndex, source_path: &Path, source: &fs::Metadata, copy: &Path) {
+    let Ok(from) = Stamp::of(source_path, source) else {
         return;
     };
     let Some(hash) = index.get(&from).map(|entry| entry.hash) else {

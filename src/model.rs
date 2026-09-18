@@ -3,11 +3,12 @@
 use std::collections::HashMap;
 use std::fs::{self, Metadata};
 use std::io;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use walkdir::WalkDir;
+
+use crate::sys;
 
 /// Cargo's per-profile lock file; its presence marks a profile dir.
 pub const CARGO_LOCK_FILE: &str = ".cargo-lock";
@@ -19,11 +20,11 @@ const CACHEDIR_TAG: &str = "CACHEDIR.TAG";
 const CARGO_TAG_MARK: &str = "created by cargo";
 /// `<target>/<triple>/<profile>/.cargo-lock` is the deepest place a profile lock lives.
 const PROFILE_LOCK_MAX_DEPTH: usize = 3;
-/// `st_blocks` counts 512-byte units whatever the filesystem block size is.
-pub const ST_BLOCK_BYTES: u64 = 512;
-const PERMISSION_BITS: u32 = 0o7777;
 
 /// Identity and version of a file. Any rewrite by cargo or rustc changes it.
+///
+/// `dev` and `ino` are whatever [`sys::file_id`] means by identity on this platform: a real
+/// device and inode where the filesystem has them, the path where it does not.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stamp {
     pub dev: u64,
@@ -33,18 +34,21 @@ pub struct Stamp {
 }
 
 impl Stamp {
-    pub fn of(meta: &Metadata) -> io::Result<Self> {
+    /// `path` is the one the metadata was read through; it is the identity itself where the
+    /// platform has no inode number.
+    pub fn of(path: &Path, meta: &Metadata) -> io::Result<Self> {
+        let (dev, ino) = sys::file_id(path, meta);
         Ok(Self {
-            dev: meta.dev(),
-            ino: meta.ino(),
-            size: meta.size(),
+            dev,
+            ino,
+            size: meta.len(),
             mtime: meta.modified()?,
         })
     }
 
     /// Never follows a symlink: a path swapped for a link reads as changed.
     pub fn read(path: &Path) -> io::Result<Self> {
-        Self::of(&fs::symlink_metadata(path)?)
+        Self::of(path, &fs::symlink_metadata(path)?)
     }
 }
 
@@ -53,7 +57,8 @@ impl Stamp {
 pub struct Inode {
     pub stamp: Stamp,
     pub mode: u32,
-    /// BSD file flags (`st_flags`); 0 off macOS.
+    /// Filesystem flags, as [`sys::flags`] reads them: the `COMPRESSED` bit and the ones that
+    /// mean the file is not ours to rewrite. 0 where the platform reports none.
     pub flags: u32,
     /// Link count from the filesystem. More than `paths.len()` means links we did not find.
     pub nlink: u64,
@@ -63,20 +68,20 @@ pub struct Inode {
 }
 
 impl Inode {
-    fn of(meta: &Metadata) -> io::Result<Self> {
+    fn of(path: &Path, meta: &Metadata) -> io::Result<Self> {
         Ok(Self {
-            stamp: Stamp::of(meta)?,
-            mode: meta.mode() & PERMISSION_BITS,
-            flags: bsd_flags(meta),
-            nlink: meta.nlink(),
-            allocated: meta.blocks() * ST_BLOCK_BYTES,
+            stamp: Stamp::of(path, meta)?,
+            mode: sys::mode(meta),
+            flags: sys::flags(meta),
+            nlink: sys::nlink(meta),
+            allocated: sys::allocated(meta),
             paths: Vec::new(),
         })
     }
 
     /// The inode at `path` as it is now, knowing only this one path. Never follows a symlink.
     pub fn read(path: &Path) -> io::Result<Self> {
-        let mut inode = Self::of(&fs::symlink_metadata(path)?)?;
+        let mut inode = Self::of(path, &fs::symlink_metadata(path)?)?;
         inode.paths.push(path.to_path_buf());
         Ok(inode)
     }
@@ -87,16 +92,6 @@ pub struct Profile {
     pub dir: PathBuf,
     pub inodes: Vec<Inode>,
     pub stale_temps: Vec<PathBuf>,
-}
-
-#[cfg(target_os = "macos")]
-fn bsd_flags(meta: &Metadata) -> u32 {
-    std::os::macos::fs::MetadataExt::st_flags(meta)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn bsd_flags(_: &Metadata) -> u32 {
-    0
 }
 
 /// Walks one profile dir. Symlinks are not followed and other devices are not entered.
@@ -112,7 +107,7 @@ pub fn scan(dir: &Path) -> io::Result<Profile> {
             stale_temps.push(entry.into_path());
             continue;
         }
-        let inode = Inode::of(&entry.metadata()?)?;
+        let inode = Inode::of(entry.path(), &entry.metadata()?)?;
         by_inode
             .entry((inode.stamp.dev, inode.stamp.ino))
             .or_insert(inode)

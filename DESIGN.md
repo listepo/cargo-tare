@@ -598,7 +598,54 @@ here). Every codec gave up on the blob in 0.13 s, which reads as a skip, not as 
 the pass now keeps the backend's skip reasons and errors and `run` prints them.
 Decompression cost at link time was not measurable on the small fixture — T11.
 
-## Platform
+## Platform layer (`src/sys/`)
 
-v0.x is macOS / APFS only. The model (inodes, families, planner) is platform-neutral; a backend
-supplies `clone`, `compress`, `is_compressed`.
+Everything that differs between platforms lives in one module and nothing above it imports
+`std::os`. One file per platform, picked at compile time:
+
+```rust
+#[cfg_attr(target_os = "macos", path = "macos.rs")]
+#[cfg_attr(all(unix, not(target_os = "macos")), path = "unix.rs")]
+#[cfg_attr(windows, path = "windows.rs")]
+mod imp;
+```
+
+Each file supplies the same eleven items: `file_id`, `nlink`, `allocated`, `flags`, `mode`,
+`set_mode`, `symlink`, `clone_file`, a `Compressor`, and the two capability constants
+`CAN_CLONE` and `CAN_COMPRESS`.
+
+**The capabilities are what the passes read.** A pass whose capability is false plans nothing —
+`Dedupe::plan` and `Compress::plan` return an empty plan before they read a single file. That is
+not politeness: a "clone" that the filesystem cannot share is a second copy of the bytes, and a
+compression pass with no backend would clone every candidate only to throw the copy away. Doing
+nothing is the correct answer, and saying so in the report is the honest one.
+
+They are compile-time floors, not filesystem facts. macOS is APFS in every case that matters, so
+both are true there. On Linux a clone depends on what is under the root (btrfs and XFS reflink,
+ext4 does not) and compression on btrfs's `chattr +c`; on Windows NTFS compresses but does not
+clone, while ReFS clones but does not compress. Turning the constants into a probe per root is
+`T20` and `T21`. Until then those platforms report no capability rather than guess: the tool
+builds, walks, and tells the truth about sizes everywhere, and only acts where it knows it wins.
+
+| | macOS (APFS) | Linux | Windows |
+| --- | --- | --- | --- |
+| identity | `st_dev` + `st_ino` | `st_dev` + `st_ino` | the path (no handle, no inode) |
+| link count | `st_nlink` | `st_nlink` | 1 — links are invisible without a handle |
+| size on disk | `st_blocks × 512` | `st_blocks × 512` | logical length |
+| flags | `st_flags` (`UF_COMPRESSED`) | none read yet (`FS_IOC_GETFLAGS` is an ioctl) | `FILE_ATTRIBUTE_*`, masked to the ones that mean something |
+| clone | `fs::copy` → `fclonefileat` | `fs::copy` → `copy_file_range` (reflink on btrfs/XFS) | plain copy |
+| compress | applesauce (LZFSE) | — | — |
+| `CAN_CLONE` / `CAN_COMPRESS` | true / true | false / false | false / false |
+
+`applesauce` is a macOS-only dependency (`[target.'cfg(target_os = "macos")'.dependencies]`), so
+the other two platforms do not build it at all.
+
+Windows deserves its own caveat. Identity from a path means two hardlinks read as two files and
+a link count always reads 1. That is consistent — `model::scan` groups by the same id it later
+checks against — and it is inert, because nothing is planned there. `GetFileInformationByHandle`
+replaces it in `T21`.
+
+What the tests cover: the suite runs where the machine is (macOS), and `src/sys/mod.rs` holds
+the three facts that must hold on every platform — a file has an identity of its own and a size
+on disk, a clone holds the bytes of its source, and an empty batch costs nothing. `just
+check-cross` compiles both other targets, which is what catches a port that stopped building.

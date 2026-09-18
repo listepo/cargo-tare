@@ -3,7 +3,6 @@
 
 use std::cell::RefCell;
 use std::fs::{self, File};
-use std::os::macos::fs::MetadataExt as _;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -11,9 +10,10 @@ use std::time::{Duration, SystemTime};
 
 use cargo_tare::compress::{Compress, DEFAULT_MIN_AGE, DEFAULT_MIN_SIZE};
 use cargo_tare::dedupe::Dedupe;
-use cargo_tare::engine::{self, Locks, Options, PassReport, Skip, UF_COMPRESSED};
+use cargo_tare::engine::{self, Locks, Options, PassReport, Skip};
 use cargo_tare::index::{HASH_BYTES, HashIndex};
 use cargo_tare::model::{CARGO_LOCK_FILE, Stamp, TMP_PREFIX};
+use cargo_tare::sys;
 use tempfile::TempDir;
 
 mod common;
@@ -66,7 +66,7 @@ fn root() -> (TempDir, PathBuf) {
 }
 
 fn is_compressed(path: &Path) -> bool {
-    fs::metadata(path).unwrap().st_flags() & UF_COMPRESSED != 0
+    sys::flags(&fs::metadata(path).unwrap()) & sys::COMPRESSED != 0
 }
 
 fn temps_left(dir: &Path) -> usize {

@@ -5,16 +5,14 @@
 //! a file that changed since the scan, and through a temp file plus `rename`. A pass that
 //! rewrites content (compression) only ever gets private copies to work on.
 
-use std::fs::{self, File, FileTimes, Permissions, TryLockError};
+use std::fs::{self, File, FileTimes, TryLockError};
 use std::io;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::model::{self, CARGO_LOCK_FILE, Inode, Profile, Stamp, TMP_PREFIX};
+use crate::sys::{self, COMPRESSED};
 
-/// `UF_COMPRESSED` from `<sys/stat.h>`: the file is transparently compressed.
-pub const UF_COMPRESSED: u32 = 0x20;
 /// Copies handed to [`Pass::compress`] at once: bounds the work a crash throws away and the
 /// time between checking a group and swapping its copy in.
 const COMPRESS_BATCH: usize = 256;
@@ -83,7 +81,7 @@ pub enum Skip {
     Unlocked,
     /// The inode has links outside the profile dir; replacing ours would split the group.
     ForeignLinks,
-    /// Flags other than `UF_COMPRESSED` (immutable, append-only, …) are not ours to drop.
+    /// Flags other than `COMPRESSED` (immutable, append-only, …) are not ours to drop.
     Flags,
     CrossDevice,
     SameInode,
@@ -362,7 +360,7 @@ fn check_group(member: &Inode, locked: &[PathBuf]) -> io::Result<Option<Skip>> {
     if member.nlink != member.paths.len() as u64 {
         return Ok(Some(Skip::ForeignLinks));
     }
-    if member.flags & !UF_COMPRESSED != 0 {
+    if member.flags & !COMPRESSED != 0 {
         return Ok(Some(Skip::Flags));
     }
     for path in &member.paths {
@@ -437,7 +435,7 @@ fn try_finish_compress(
     locked: &[PathBuf],
 ) -> io::Result<Result<Inode, Skip>> {
     let compressed = Inode::read(copy)?;
-    if compressed.flags & UF_COMPRESSED == 0 || compressed.stamp.size != member.stamp.size {
+    if compressed.flags & COMPRESSED == 0 || compressed.stamp.size != member.stamp.size {
         return Ok(Err(Skip::NotCompressed));
     }
     // The backend took its time: look at the group once more.
@@ -482,17 +480,14 @@ fn rename_over(
 }
 
 fn clone_as(source: &Path, temp: &Path, member: &Inode) -> io::Result<()> {
-    // ponytail: `fs::copy` clones through `fclonefileat` on APFS and quietly falls back to a
-    // byte copy elsewhere (correct, just saves nothing). Call `fclonefileat` via rustix if a
-    // hard failure is ever preferable.
-    fs::copy(source, temp)?;
+    sys::clone_file(source, temp)?;
     restore_meta(temp, member)
 }
 
 fn restore_meta(temp: &Path, member: &Inode) -> io::Result<()> {
     // Times first: a read-only mode would not stop `futimens`, but an unreadable one stops `open`.
     File::open(temp)?.set_times(FileTimes::new().set_modified(member.stamp.mtime))?;
-    fs::set_permissions(temp, Permissions::from_mode(member.mode))
+    sys::set_mode(temp, member.mode)
 }
 
 fn sibling_temp(path: &Path) -> PathBuf {

@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::engine::UF_COMPRESSED;
 use crate::model;
+use crate::sys::COMPRESSED;
 
 /// Cargo's lock for its whole home, directly inside it.
 pub const LOCK_FILE: &str = ".package-cache";
@@ -57,7 +57,7 @@ pub fn inspect(home: &Path) -> io::Result<Stats> {
         for inode in model::scan(&dir)?.inodes {
             stats.allocated_bytes += inode.allocated;
             stats.logical_bytes += inode.stamp.size;
-            if inode.flags & UF_COMPRESSED != 0 {
+            if inode.flags & COMPRESSED != 0 {
                 stats.compressed_bytes += inode.allocated;
             } else if inode.stamp.size >= crate::compress::DEFAULT_MIN_SIZE {
                 stats.compressible_bytes += inode.allocated;

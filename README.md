@@ -197,8 +197,25 @@ Planned:
 cargo tare advise          # config findings
 ```
 
-macOS / APFS only for 0.x. Version-gated features (unit-level pruning, shared build-dir
-automation, symlink mode for non-reflink filesystems) are in `roadmap.md`.
+## Platforms
+
+The tool builds and runs on macOS, Linux and Windows. What it *does* depends on what the
+filesystem can do, and it never pretends:
+
+| | macOS | Linux | Windows |
+| --- | --- | --- | --- |
+| `status`, `advise`, `seed` | yes | yes | yes |
+| `dedupe` (block sharing) | yes, APFS | not yet — btrfs/XFS reflink is `T20` | not yet — ReFS is `T21` |
+| `compress` | yes, APFS/LZFSE | not yet — btrfs `chattr +c` is `T20` | not yet — NTFS is `T21` |
+
+A pass that cannot win anything on the filesystem under your target plans nothing and says so in
+the report — it does not copy files around for no gain. ext4 and NTFS have neither block sharing
+nor compression at all; the fallback for them is hardlinking (`T22`).
+
+`seed` works everywhere: where the filesystem shares blocks the copy is free, where it does not
+it costs the disk but still saves the build.
+
+Version-gated features (unit-level pruning, shared build-dir automation) are in `roadmap.md`.
 
 ## Running it automatically
 

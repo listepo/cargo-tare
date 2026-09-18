@@ -11,6 +11,7 @@ too slow, see `DESIGN.md`).
 | rustc | mise (pin in `rust-toolchain.toml`, mirrored in `mise.toml`) | Build | https://github.com/rust-lang/rust |
 | cargo | mise (with rust) | Build, and the tool under study | https://github.com/rust-lang/cargo |
 | just | global (cargo install / brew) | `just check`: fmt, clippy, test | https://github.com/casey/just |
+| rust-std for `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc` | `rustup target add <triple>` | `just check-cross`: the other two platforms must compile | https://github.com/rust-lang/rust |
 | hyperfine | global (brew; mise ships an x86_64 build that will not run on arm64) | `scripts/bench.sh`: build timings | https://github.com/sharkdp/hyperfine |
 | sccache | global (mise) | `scripts/bench.sh`: the variant the tool is compared against | https://github.com/mozilla/sccache |
 
@@ -22,7 +23,7 @@ too slow, see `DESIGN.md`).
 | walkdir | local | https://github.com/BurntSushi/walkdir | Walk a profile dir without following symlinks or leaving the device |
 | anyhow | local | https://github.com/dtolnay/anyhow | Error context in the binary |
 | sha2 | local | https://github.com/RustCrypto/hashes | Content hash for dedupe |
-| applesauce | local | https://github.com/Dr-Emann/applesauce | Backend of the compress pass: transparent APFS compression |
+| applesauce | local, macOS only (`[target.'cfg(target_os = "macos")'.dependencies]`) | https://github.com/Dr-Emann/applesauce | Backend of the compress pass: transparent APFS compression |
 | rayon | local | https://github.com/rayon-rs/rayon | Hash files in parallel |
 | serde | local | https://github.com/serde-rs/serde | Serialize the inventory |
 | serde_json | local | https://github.com/serde-rs/json | `status --json`, `run --json`; cargo's JSON messages in the test oracle |

@@ -14,4 +14,5 @@ pub mod inventory;
 pub mod model;
 pub mod orphans;
 pub mod seed;
+pub mod sys;
 pub mod toolchains;
