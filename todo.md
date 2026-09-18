@@ -1,2 +1,1 @@
 - T21. Windows: NTFS compression and ReFS block cloning
-- T22. Link fallback where the filesystem cannot clone

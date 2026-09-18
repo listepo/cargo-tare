@@ -177,14 +177,13 @@ fn a_dry_run_reports_the_home_as_its_own_group_and_changes_nothing() {
         .find(|group| group["family"] == home.to_str().unwrap())
         .unwrap();
     let passes = group["passes"].as_array().unwrap();
-    assert_eq!(
-        passes.len(),
-        1,
-        "only compress runs on the home: {passes:?}"
-    );
-    assert_eq!(passes[0]["name"], "compress");
+    // The two lossless passes, and nothing that deletes: these are sources, not build output.
+    let names: Vec<&str> = passes.iter().map(|p| p["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["compress", "dedupe"], "{passes:?}");
     assert!(passes[0]["planned"].as_u64().unwrap() >= 2);
-    assert_eq!(passes[0]["applied"], 0);
+    for pass in passes {
+        assert_eq!(pass["applied"], 0, "a dry run applies nothing: {pass:?}");
+    }
     assert_eq!(contents(&home), before);
 }
 

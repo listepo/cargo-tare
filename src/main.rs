@@ -140,6 +140,12 @@ struct RunArgs {
     /// repository: unrelated projects do share artifacts, at the price of one wider lock
     #[arg(long)]
     across_families: bool,
+    /// HAZARD. Where the filesystem cannot share blocks (ext4, NTFS), let `dedupe` share equal
+    /// build artifacts as hardlinks instead. rustc rewrites its outputs in place, so a later
+    /// build that rewrites one linked artifact rewrites every other name for it, in every target
+    /// sharing it. Off by default, and the cargo home's sources are shared without it
+    #[arg(long)]
+    link_artifacts: bool,
     /// Content-hash cache [default: ~/.cache/cargo-tare/hashes-v1.bin]
     #[arg(long, value_name = "FILE")]
     index: Option<PathBuf>,
@@ -213,9 +219,11 @@ fn missing_caps(caps: &cargo_tare::sys::Caps) -> Option<&'static str> {
         (true, false) => {
             Some("this filesystem has no transparent compression: compress finds nothing here")
         }
-        (false, true) => Some("this filesystem shares no blocks: dedupe finds nothing here"),
+        (false, true) => Some(
+            "this filesystem shares no blocks: dedupe links cargo home sources, artifacts only with --link-artifacts",
+        ),
         (false, false) => Some(
-            "this filesystem neither shares blocks nor compresses: both lossless passes find nothing here",
+            "this filesystem neither shares blocks nor compresses: compress finds nothing here, dedupe only links cargo home sources",
         ),
     }
 }
@@ -507,12 +515,19 @@ fn run(args: RunArgs) -> Result<Done> {
     let index_path = index_path(args.index)?;
     let index = RefCell::new(HashIndex::load(&index_path));
     let (mut compress, mut dedupe) = (Compress::new(&index), Dedupe::new(&index));
+    // Artifacts are only linked when the user asks; the cargo home's unpacked sources are
+    // always safe to link, because cargo replaces a source dir instead of rewriting its files.
+    let mut home_dedupe = Dedupe::new(&index);
+    dedupe.link_fallback = args.link_artifacts;
+    home_dedupe.link_fallback = true;
     if let Some(secs) = args.min_age.or(config.min_age) {
         let min_age = Duration::from_secs(secs);
         (compress.min_age, dedupe.min_age) = (min_age, min_age);
+        home_dedupe.min_age = min_age;
     }
     if let Some(bytes) = args.min_size.or(config.min_size) {
         (compress.min_size, dedupe.min_size) = (bytes, bytes);
+        home_dedupe.min_size = bytes;
     }
 
     // One engine run per family: its locks block builds only in the targets being compared.
@@ -602,6 +617,12 @@ fn run(args: RunArgs) -> Result<Done> {
         groups.entry(key).or_default().extend(dirs);
     }
 
+    if args.link_artifacts && !args.json {
+        eprintln!(
+            "--link-artifacts: equal artifacts may become one inode where the filesystem \
+             cannot share blocks. A build that rewrites one of them rewrites the others."
+        );
+    }
     let mut left_busy = false;
     let mut reports = Vec::new();
     for (group, profile_dirs) in &groups {
@@ -640,12 +661,20 @@ fn run(args: RunArgs) -> Result<Done> {
         if !args.json {
             println!("{}", home.display());
         }
-        let only_compress: Vec<&dyn Pass> = passes
+        // Compression, and sharing with the home's own policy: on a filesystem without
+        // copy-on-write these sources are the one place a hardlink is safe.
+        let home_passes: Vec<&dyn Pass> = passes
             .iter()
             .copied()
             .filter(|pass| pass.name() == compress::NAME)
+            .chain(
+                passes
+                    .iter()
+                    .any(|pass| pass.name() == dedupe::NAME)
+                    .then_some(&home_dedupe as &dyn Pass),
+            )
             .collect();
-        let report = engine::run(&dirs, &only_compress, &opts, Locks::Shared(&lock))?;
+        let report = engine::run(&dirs, &home_passes, &opts, Locks::Shared(&lock))?;
         left_busy |= !report.busy.is_empty();
         if args.json {
             reports.push((home.as_path(), report));

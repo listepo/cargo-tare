@@ -864,3 +864,68 @@ Not done, and deliberately: the suite runs in a local VM, not in CI — the crea
 "compile first, then a local VM" over GitHub Actions. `ideas.md` carries the CI job as an idea.
 `FIDEDUPERANGE` stays unused for the reason the card gives; nothing measured here changed that.
 ext4 still wins nothing, which is T22.
+
+### T22. Link fallback where the filesystem cannot clone
+
+ext4 and NTFS have no copy-on-write, so `dedupe` has nothing to plan there. The fallback is a
+hardlink, and the reason it is not simply the default is a real hazard: rustc opens its output
+files with truncate, so a rebuild rewrites the inode in place and would rewrite every other name
+pointing at it. Cargo's own hardlinks (`target/debug/fx` to `deps/fx-<hash>`) are safe because
+cargo replaces the name rather than the inode; ours would not be.
+
+So the fallback is split by what the file is, not by what the filesystem allows:
+
+- **Cargo home sources** (`registry/src`, `git/checkouts`): safe to hardlink. Cargo extracts a
+  crate into a fresh directory and writes `.cargo-ok` last; it never rewrites an extracted file
+  in place. This is where the bytes are anyway — 1.52 GiB of them on the machine measured in
+  `docs/bench.md`.
+- **Build artifacts in a target dir**: only behind an explicit flag (`--link-artifacts`), with
+  the truncate hazard in `--help`, in the README and in the dry-run output. Nothing enables it
+  for the user.
+
+Compression is unaffected and keeps its own answer per platform: APFS and btrfs and NTFS have
+it, ext4 and XFS do not, and a pass that cannot run says so instead of failing. Done: a fixture
+on a filesystem without reflinks shares the cargo home's sources and leaves target artifacts
+alone unless the flag is given, `status` says which of the two the filesystem under each root
+can do, and the hazard is written down where a user meets it.
+
+Plan followed: `Replace` gained a `how: Share` field — `Share::Clone` or `Share::Link` — so the
+engine is told how to share rather than guessing, and `Dedupe::share(profile)` answers it per
+profile: a clone wherever `caps.clone` is true, a hardlink where it is not *and* the pass was
+given `link_fallback`. `run --cargo-home` now runs `dedupe` beside `compress` with that fallback
+on; target groups get it only from `--link-artifacts`.
+
+Outcome: done. Two rules turned out to belong in the engine rather than the pass, because both
+are about the mechanism and not about the policy:
+
+- **Modes must already agree.** One inode holds one mode, so linking files whose permissions
+  differ would quietly change the other name's. That is `Skip::ModeMismatch`, and nothing is
+  touched when it fires.
+- **The shared inode keeps the later of the two modification times.** A hardlink hands the
+  member the source's mtime, and a file that suddenly reads older than what it was built from is
+  a file cargo rebuilds — the pass would then cost a build instead of saving space. The source's
+  own mtime moves forward with it, which is the safe direction.
+
+`status` says the whole truth now: on a filesystem with neither capability the line reads
+*compress finds nothing here, dedupe only links cargo home sources* rather than claiming both
+passes are idle.
+
+Tests: `tests/link.rs` is the A/B, and the flag is the only difference between its two runs. Both
+filesystem outcomes are stated in each test rather than skipped, as in `tests/caps.rs` — where
+blocks can be shared the twin is cloned and the flag changes nothing, where they cannot the
+control run leaves the artifacts exactly as it found them and only the treatment shares them.
+The cargo home's sources are shared with no flag on either side. Both runs end with the freshness
+oracle, because linking moves mtimes and a pass that costs a rebuild is not a saving.
+`tests/engine.rs` covers the mechanism itself on every platform (one inode for the whole group,
+the later mtime kept, a mode mismatch refused), which is what keeps the link path under test on
+macOS, where it is never taken by policy.
+
+Verified: `just check`, `just check-cross` and the full suite on macOS (22 suites), and in the
+lima VM on btrfs and ext4 loopback images, all green — on ext4 the link path is the one actually
+taken. Two flakes were seen there under full parallel load, each once, each green alone and on
+the next full run (`harness::oracle_is_green_…` during T20, `doc::ab_only_the_named_run_removes_
+the_docs` here): fixture builds racing on 4 cores, not a pass.
+
+Not done: nothing from the card. `docs/bench.md` gained no row for this — the VM has no real
+cargo home to measure and pointing the tool at the machine's own is not something a test or a
+benchmark here may do.

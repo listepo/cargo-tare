@@ -224,6 +224,38 @@ files between them.
    the new inode is stored with the known hash and the shared mark — no rehash, and the next run
    plans nothing for it.
 
+### Sharing without copy-on-write (`T22`)
+
+A `Replace` carries *how* it is to be shared, and the pass decides which:
+
+| | `Share::Clone` | `Share::Link` |
+| --- | --- | --- |
+| what it is | a copy-on-write clone | one inode under every name |
+| needs | a filesystem with reflinks | nothing |
+| a later rewrite of one name | touches that name only | rewrites every other name too |
+| where it is used | wherever `caps.clone` is true | only where it cannot be, and only on safe files |
+
+The danger is specific and worth naming: rustc opens its output files with truncate, so it
+rewrites an artifact's inode in place. Cargo's own hardlinks (`target/debug/fx` to
+`deps/fx-<hash>`) are safe because cargo replaces the *name* — ours would not be. So the
+fallback is split by what the file is, not by what the filesystem allows:
+
+- **Cargo home sources** are linked with no flag: cargo extracts a crate into a fresh directory
+  and writes `.cargo-ok` last, and never rewrites an extracted file in place. `run --cargo-home`
+  therefore runs `dedupe` beside `compress`, with `link_fallback` on.
+- **Build artifacts** need `--link-artifacts`, whose help text carries the hazard, and the run
+  prints it again on stderr while it works.
+
+Two rules the engine keeps whatever the pass asked for. It refuses to link files whose modes
+differ (`Skip::ModeMismatch`) — one inode holds one mode, and silently changing the other name's
+permissions is not a saving. And the shared inode keeps the **later** of the two modification
+times, because a name that suddenly reads older than the files it was built from is a name cargo
+rebuilds: the pass would then cost a build instead of saving space. The source's own mtime moves
+forward with it, which is the safe direction.
+
+On a filesystem that clones, none of this happens and `--link-artifacts` changes nothing: a
+clone is better and needs no permission.
+
 The **index** maps `(device, inode)` to `(size, mtime, hash, shared)`; a lookup with a different
 size or mtime misses, so a rewritten file is rehashed and loses its shared mark. It is one flat
 file of fixed little-endian records behind a magic string (`~/.cache/cargo-tare/hashes-v1.bin`,

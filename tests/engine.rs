@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
 
-use cargo_tare::engine::{self, Action, Locks, Options, Pass, Replace, Report, Skip};
+use cargo_tare::engine::{self, Action, Locks, Options, Pass, Replace, Report, Share, Skip};
 use cargo_tare::model::{self, CARGO_LOCK_FILE, Profile, TMP_PREFIX};
 use tempfile::TempDir;
 
@@ -37,6 +37,11 @@ impl<F: Fn(&[Profile]) -> Vec<Action>> Pass for FnPass<F> {
 
 /// Plans: replace the inode of file `member` with a clone of file `source`, if both were scanned.
 fn replace_by_name(profiles: &[Profile], source: &str, member: &str) -> Vec<Action> {
+    share_by_name(profiles, source, member, Share::Clone)
+}
+
+/// The same, sharing the way `how` says.
+fn share_by_name(profiles: &[Profile], source: &str, member: &str, how: Share) -> Vec<Action> {
     let find = |name: &str| {
         profiles
             .iter()
@@ -50,6 +55,7 @@ fn replace_by_name(profiles: &[Profile], source: &str, member: &str) -> Vec<Acti
         source: source.paths[0].clone(),
         source_stamp: source.stamp.clone(),
         member: member.clone(),
+        how,
     })]
 }
 
@@ -111,6 +117,65 @@ fn replaces_whole_hardlink_group_and_keeps_mtime_and_mode() {
     assert_eq!(meta.mode() & 0o7777, MEMBER_MODE);
     assert_eq!(fs::read(&member).unwrap(), CONTENT);
     assert!(model::scan(&dir).unwrap().stale_temps.is_empty());
+}
+
+/// The link fallback (`T22`), which is the only way to share on a filesystem without
+/// copy-on-write: one inode under every name of the group, and the *later* of the two
+/// modification times on it, because a name that suddenly reads older than what it was built
+/// from is a name cargo rebuilds. Filesystem-independent, so this runs everywhere.
+#[test]
+fn a_link_puts_the_group_on_one_inode_and_keeps_the_later_mtime() {
+    let (_tmp, dir) = profile();
+    let (canon, member) = (dir.join("canon"), dir.join("deps/member"));
+    let link = dir.join("member-link");
+    fs::hard_link(&member, &link).unwrap();
+    // One inode carries one mode, so the engine only links files that already agree on it.
+    let mode = fs::metadata(&canon).unwrap().mode() & 0o7777;
+    fs::set_permissions(&member, fs::Permissions::from_mode(mode)).unwrap();
+    // And the member is the newer of the two here, so its time is the one that must survive.
+    let newer = SystemTime::now() + Duration::from_secs(600);
+    File::open(&member).unwrap().set_modified(newer).unwrap();
+
+    let pass = FnPass {
+        lossy: false,
+        plan: |p: &[Profile]| share_by_name(p, "canon", "member", Share::Link),
+    };
+    let report = run(&dir, &[&pass], &Options::default());
+
+    assert_eq!(report.passes[0].applied, 1, "{report:?}");
+    assert_eq!(
+        ino(&member),
+        ino(&canon),
+        "one inode, not a copy of the bytes"
+    );
+    assert_eq!(ino(&member), ino(&link), "the whole group follows");
+    assert_eq!(fs::read(&member).unwrap(), CONTENT);
+    assert_eq!(
+        fs::metadata(&member).unwrap().modified().unwrap(),
+        newer,
+        "the shared inode keeps the later time, for both names"
+    );
+    assert!(model::scan(&dir).unwrap().stale_temps.is_empty());
+}
+
+/// Modes are not negotiable: the fixture's member is `0o640` and `canon` is not, and one inode
+/// cannot hold both. Nothing is linked and nothing is touched.
+#[test]
+fn a_link_refuses_to_change_a_files_mode() {
+    let (_tmp, dir) = profile();
+    let member = dir.join("deps/member");
+    let before = ino(&member);
+
+    let pass = FnPass {
+        lossy: false,
+        plan: |p: &[Profile]| share_by_name(p, "canon", "member", Share::Link),
+    };
+    let report = run(&dir, &[&pass], &Options::default());
+
+    assert_eq!(*only_skip(&report), Skip::ModeMismatch);
+    assert_eq!(ino(&member), before);
+    assert_eq!(fs::metadata(&member).unwrap().mode() & 0o7777, MEMBER_MODE);
+    assert_eq!(fs::read(&member).unwrap(), CONTENT);
 }
 
 #[test]

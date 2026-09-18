@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime};
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
-use crate::engine::{Action, Pass, Replace};
+use crate::engine::{Action, Pass, Replace, Share};
 use crate::index::{Hash, HashIndex};
 use crate::model::{Inode, Profile, Stamp};
 use crate::sys::{self, COMPRESSED};
@@ -22,9 +22,18 @@ pub const DEFAULT_MIN_SIZE: u64 = 4096;
 pub const DEFAULT_MIN_AGE: Duration = Duration::from_secs(60 * 60);
 const HASH_BUFFER_BYTES: usize = 1 << 20;
 
+/// An inode that may join a content group: whether an earlier run already shared it, and how
+/// this run would share it.
+type Candidate<'a> = (&'a Inode, bool, Share);
+
 pub struct Dedupe<'a> {
     pub min_size: u64,
     pub min_age: Duration,
+    /// Where the filesystem cannot share blocks, share the inode instead. True for the cargo
+    /// home's unpacked sources, which cargo never rewrites in place; for a target dir only when
+    /// the user asks with `--link-artifacts`, because rustc truncates its outputs and would
+    /// rewrite every name pointing at the same inode. See [`Share::Link`].
+    pub link_fallback: bool,
     index: &'a RefCell<HashIndex>,
     hashed: Cell<usize>,
 }
@@ -35,6 +44,7 @@ impl<'a> Dedupe<'a> {
         Self {
             min_size: DEFAULT_MIN_SIZE,
             min_age: DEFAULT_MIN_AGE,
+            link_fallback: false,
             index,
             hashed: Cell::new(0),
         }
@@ -43,6 +53,19 @@ impl<'a> Dedupe<'a> {
     /// Files read and hashed so far; everything else came from the index or was never needed.
     pub fn hashed(&self) -> usize {
         self.hashed.get()
+    }
+
+    /// How this profile's files may be shared, or `None` when they may not be. A filesystem
+    /// with copy-on-write always answers [`Share::Clone`]; without it the only way to share is
+    /// one inode under both names, which is [`Self::link_fallback`]'s question to answer.
+    ///
+    /// Not one file is read to decide this.
+    fn share(&self, profile: &Profile) -> Option<Share> {
+        if sys::caps(&profile.dir).clone {
+            Some(Share::Clone)
+        } else {
+            self.link_fallback.then_some(Share::Link)
+        }
     }
 
     /// Also the rule for a source: it must not be rewritten under our feet either.
@@ -64,19 +87,19 @@ impl Pass for Dedupe<'_> {
     fn plan(&self, profiles: &[Profile]) -> Vec<Action> {
         let now = SystemTime::now();
         // A file whose size is unique on its device has no twin: never read it.
-        let mut by_size: HashMap<(u64, u64), Vec<&Inode>> = HashMap::new();
-        // Without copy-on-write a "clone" is a second copy of the bytes: the same disk for more
-        // churn. Nothing to plan there, and not one file is read to find it out.
+        let mut by_size: HashMap<(u64, u64), Vec<(&Inode, Share)>> = HashMap::new();
         let sharing = profiles
             .iter()
-            .filter(|profile| sys::caps(&profile.dir).clone);
-        for inode in sharing.flat_map(|p| &p.inodes) {
-            if self.eligible(inode, now) {
-                let key = (inode.stamp.dev, inode.stamp.size);
-                by_size.entry(key).or_default().push(inode);
+            .filter_map(|profile| self.share(profile).map(|how| (profile, how)));
+        for (profile, how) in sharing {
+            for inode in &profile.inodes {
+                if self.eligible(inode, now) {
+                    let key = (inode.stamp.dev, inode.stamp.size);
+                    by_size.entry(key).or_default().push((inode, how));
+                }
             }
         }
-        let candidates: Vec<&Inode> = by_size
+        let candidates: Vec<(&Inode, Share)> = by_size
             .into_values()
             .filter(|bucket| bucket.len() > 1)
             .flatten()
@@ -85,7 +108,7 @@ impl Pass for Dedupe<'_> {
         let mut index = self.index.borrow_mut();
         let unknown: Vec<&Inode> = candidates
             .iter()
-            .copied()
+            .map(|(inode, _)| *inode)
             .filter(|inode| index.get(&inode.stamp).is_none())
             .collect();
         let computed: Vec<(&Inode, io::Result<Hash>)> = unknown
@@ -100,29 +123,30 @@ impl Pass for Dedupe<'_> {
             }
         }
 
-        let mut by_content: HashMap<(u64, Hash), Vec<(&Inode, bool)>> = HashMap::new();
-        for inode in candidates {
+        let mut by_content: HashMap<(u64, Hash), Vec<Candidate<'_>>> = HashMap::new();
+        for (inode, how) in candidates {
             if let Some(entry) = index.get(&inode.stamp) {
                 let key = (inode.stamp.dev, entry.hash);
                 by_content
                     .entry(key)
                     .or_default()
-                    .push((inode, entry.shared));
+                    .push((inode, entry.shared, how));
             }
         }
 
         let mut actions = Vec::new();
         for mut group in by_content.into_values() {
             group.sort_by(|a, b| canonical_order(a).cmp(&canonical_order(b)));
-            let (canonical, _) = group[0];
+            let (canonical, _, _) = group[0];
             // Inodes already marked shared are clones from an earlier run: leave them.
             // ponytail: two shared clusters with the same content are never merged.
-            for (member, shared) in &group[1..] {
+            for (member, shared, how) in &group[1..] {
                 if !shared {
                     actions.push(Replace {
                         source: canonical.paths[0].clone(),
                         source_stamp: canonical.stamp.clone(),
                         member: (*member).clone(),
+                        how: *how,
                     });
                 }
             }
@@ -151,8 +175,8 @@ impl Pass for Dedupe<'_> {
 
 /// Smallest first: an already shared inode, then a compressed one (its clones stay compressed,
 /// which is how dedupe and compress add up instead of fighting), then the oldest.
-fn canonical_order<'a>(entry: &(&'a Inode, bool)) -> (bool, bool, SystemTime, &'a Path) {
-    let (inode, shared) = *entry;
+fn canonical_order<'a>(entry: &Candidate<'a>) -> (bool, bool, SystemTime, &'a Path) {
+    let (inode, shared, _) = *entry;
     let compressed = inode.flags & COMPRESSED != 0;
     (
         !shared,
@@ -202,17 +226,17 @@ mod tests {
         let compressed = inode("compressed", COMPRESSED, 3);
         let shared = inode("shared", 0, 4);
         let mut group = [
-            (&new, false),
-            (&compressed, false),
-            (&shared, true),
-            (&old, false),
+            (&new, false, Share::Clone),
+            (&compressed, false, Share::Clone),
+            (&shared, true, Share::Clone),
+            (&old, false, Share::Clone),
         ];
 
         group.sort_by(|a, b| canonical_order(a).cmp(&canonical_order(b)));
 
         let names: Vec<_> = group
             .iter()
-            .map(|(i, _)| i.paths[0].to_str().unwrap())
+            .map(|(i, _, _)| i.paths[0].to_str().unwrap())
             .collect();
         assert_eq!(names, ["shared", "compressed", "old", "new"]);
     }

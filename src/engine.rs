@@ -17,12 +17,27 @@ use crate::sys::{self, COMPRESSED};
 /// time between checking a group and swapping its copy in.
 const COMPRESS_BATCH: usize = 256;
 
-/// Replace every path of `member` with a copy-on-write clone of `source`.
+/// How a replacement gets its bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Share {
+    /// A copy-on-write clone: its own inode and its own metadata, so a rewrite of either name
+    /// touches only that name. The only safe choice for anything a build rewrites.
+    Clone,
+    /// A hardlink: one inode under every name. Cheap everywhere, including filesystems with no
+    /// copy-on-write at all, and dangerous for exactly one reason — rustc opens its outputs with
+    /// truncate, so a rebuild rewrites the inode in place and every other name with it. The
+    /// pass decides where that is acceptable; the engine only refuses to change a file's mode
+    /// on the way.
+    Link,
+}
+
+/// Replace every path of `member` with `source`, shared the way `how` says.
 #[derive(Clone, Debug)]
 pub struct Replace {
     pub source: PathBuf,
     pub source_stamp: Stamp,
     pub member: Inode,
+    pub how: Share,
 }
 
 #[derive(Clone, Debug)]
@@ -86,6 +101,8 @@ pub enum Skip {
     CrossDevice,
     SameInode,
     SizeMismatch,
+    /// A hardlink would put one mode on both names, and these two do not agree on one.
+    ModeMismatch,
     /// Size, mtime or inode differs from the scan: cargo or rustc got there first.
     Changed,
     /// The backend left the copy uncompressed: not worth it, not supported, or an error there.
@@ -320,6 +337,7 @@ fn try_replace(replace: &Replace, locked: &[PathBuf]) -> io::Result<Option<Skip>
         source,
         source_stamp,
         member,
+        how: _,
     } = replace;
     if !is_locked(source, locked) {
         return Ok(Some(Skip::Unlocked));
@@ -341,7 +359,17 @@ fn try_replace(replace: &Replace, locked: &[PathBuf]) -> io::Result<Option<Skip>
     }
 
     let temp = sibling_temp(&member.paths[0]);
-    swap_in(&temp, member, || clone_as(source, &temp, member))?;
+    match replace.how {
+        Share::Clone => swap_in(&temp, member, || clone_as(source, &temp, member))?,
+        Share::Link => {
+            // One inode under both names means one mode for both: linking files whose
+            // permissions differ would quietly change the other name's.
+            if sys::mode(&fs::symlink_metadata(source)?) != member.mode {
+                return Ok(Some(Skip::ModeMismatch));
+            }
+            swap_in(&temp, member, || link_as(source, &temp, member))?;
+        }
+    }
     Ok(None)
 }
 
@@ -477,6 +505,19 @@ fn rename_over(
         let _ = fs::remove_file(temp);
     }
     result
+}
+
+/// A hardlink instead of a clone. There is no metadata to restore — the inode is the source's
+/// and so are its mode and times — except that the shared inode keeps the *later* of the two
+/// modification times. A file that suddenly reads older than what it was built from is a file
+/// cargo rebuilds, and that would make the pass cost a build instead of saving space. The
+/// source's own mtime moves forward with it, which is the safe direction.
+fn link_as(source: &Path, temp: &Path, member: &Inode) -> io::Result<()> {
+    fs::hard_link(source, temp)?;
+    if member.stamp.mtime > fs::symlink_metadata(temp)?.modified()? {
+        File::open(temp)?.set_times(FileTimes::new().set_modified(member.stamp.mtime))?;
+    }
+    Ok(())
 }
 
 fn clone_as(source: &Path, temp: &Path, member: &Inode) -> io::Result<()> {
