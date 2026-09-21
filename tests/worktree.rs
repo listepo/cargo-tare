@@ -27,10 +27,14 @@ const THIRD: &str = "[package]\nname = \"third\"\nversion = \"1.0.0\"\nedition =
 
 impl Repo {
     fn new() -> Self {
+        Self::with(&["ws"])
+    }
+
+    /// The repository with one such workspace at each of `workspaces`, every one built.
+    fn with(workspaces: &[&str]) -> Self {
         let tmp = TempDir::new().unwrap();
         let base = tmp.path().canonicalize().unwrap();
         let vendor = base.join("shared/vendor/third");
-        let ws = base.join("repo/ws");
         for (path, content) in [
             (vendor.join("Cargo.toml"), THIRD.to_string()),
             (
@@ -41,46 +45,63 @@ impl Repo {
                 vendor.join(".cargo-checksum.json"),
                 r#"{"files":{},"package":null}"#.into(),
             ),
-            (ws.join("Cargo.toml"), MANIFEST.into()),
-            (
-                ws.join("src/main.rs"),
-                "fn main() { assert_eq!(third::n(), 7); }\n".into(),
-            ),
-            (
-                ws.join(".cargo/config.toml"),
-                format!(
-                    "[source.crates-io]\nreplace-with = \"vendored\"\n\n\
-                     [source.vendored]\ndirectory = {:?}\n",
-                    vendor.parent().unwrap()
-                ),
-            ),
         ] {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, content).unwrap();
         }
         let root = base.join("repo");
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let lockfile = Command::new(cargo)
-            .current_dir(&ws)
-            .args(["generate-lockfile", "--offline"])
-            .output()
-            .unwrap();
-        assert!(
-            lockfile.status.success(),
-            "{}",
-            String::from_utf8_lossy(&lockfile.stderr)
-        );
+        for ws in workspaces {
+            workspace(&root.join(ws), &vendor);
+        }
         git(&root, &["init", "-b", "main"]);
         // Committed before anything is built, so no target dir can reach a worktree.
         git(&root, &["add", "."]);
         git(&root, &["commit", "-m", "fixture"]);
-        assert!(
-            stale_units_at(&ws, &ws.join("target")).len() > 1,
-            "built from scratch"
-        );
+        for ws in workspaces {
+            let ws = root.join(ws);
+            assert!(
+                stale_units_at(&ws, &ws.join("target")).len() > 1,
+                "built from scratch"
+            );
+        }
         Self { tmp, root }
     }
+}
 
+/// The workspace `ws` of the fixture: `app`, depending on the vendored `third`, with a lockfile.
+fn workspace(ws: &Path, vendor: &Path) {
+    for (path, content) in [
+        (ws.join("Cargo.toml"), MANIFEST.to_string()),
+        (
+            ws.join("src/main.rs"),
+            "fn main() { assert_eq!(third::n(), 7); }\n".into(),
+        ),
+        (
+            ws.join(".cargo/config.toml"),
+            format!(
+                "[source.crates-io]\nreplace-with = \"vendored\"\n\n\
+                 [source.vendored]\ndirectory = {:?}\n",
+                vendor.parent().unwrap()
+            ),
+        ),
+    ] {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let lockfile = Command::new(cargo)
+        .current_dir(ws)
+        .args(["generate-lockfile", "--offline"])
+        .output()
+        .unwrap();
+    assert!(
+        lockfile.status.success(),
+        "{}",
+        String::from_utf8_lossy(&lockfile.stderr)
+    );
+}
+
+impl Repo {
     fn target(&self) -> PathBuf {
         self.root.join("ws/target")
     }
@@ -176,4 +197,33 @@ fn nothing_to_seed_from_is_said_and_is_not_a_failure() {
         .stdout(contains("nothing to seed from"));
 
     assert!(!worktree.join("ws/target").exists());
+}
+
+#[test]
+fn from_the_checkout_root_every_workspace_is_seeded_and_fresh() {
+    let repo = Repo::with(&["ws", "tools/ws2"]);
+    let worktree = repo.worktree("both");
+    let state = repo.tmp.path().join("state");
+
+    dunnage(&state)
+        .current_dir(&repo.root)
+        .args(["worktree", "add", "--index"])
+        .arg(state.join("hashes.bin"))
+        .arg(&worktree)
+        .assert()
+        .success()
+        .stdout(contains(worktree.join("ws/target").to_str().unwrap()))
+        .stdout(contains(
+            worktree.join("tools/ws2/target").to_str().unwrap(),
+        ));
+
+    for ws in ["ws", "tools/ws2"] {
+        let ws = worktree.join(ws);
+        let rebuilt = stale_units_at(&ws, &ws.join("target"));
+        assert!(
+            !rebuilt.iter().any(|unit| unit.contains("third")),
+            "{}: the dependency is reused: {rebuilt:?}",
+            ws.display()
+        );
+    }
 }

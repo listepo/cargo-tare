@@ -16,7 +16,6 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | T31 | todo | P2 | 4 | 0% | |
 | T32 | todo | P2 | 4 | 0% | |
 | T34 | todo | P2 | 4 | 0% | |
-| T37 | todo | P2 | 3 | 0% | |
 | T38 | todo | P2 | 3 | 0% | |
 | T39 | todo | P3 | 2 | 0% | |
 | T40 | todo | P3 | 3 | 0% | |
@@ -173,18 +172,6 @@ when the config enables them; the daemon adds no code path that mutates a build 
 watcher crate (`notify` is the candidate) is a new dependency and the creator's call at claim
 time; the timers alone are a complete first version. Logging is the observer's events on
 stderr, which launchd and journald already collect — no logging crate.
-
-### T37. Monorepo: `seed` every position
-
-`seed::choose` already looks "at the same place inside the sibling checkout", but for one dir
-with the hardcoded name `target`. A monorepo checkout has many build dirs. `seed` in a checkout
-root seeds every position: for each build dir of the sibling checkouts whose adapter allows
-seeding, if the owner's project exists in the new checkout and the position is empty, clone it
-from the sibling where *that position* was built most recently — no single worktree is the
-newest everywhere. Positions whose project is absent on this branch are skipped. `seed <dir>`
-keeps today's meaning. `dunnage worktree add` (T26) gets it for free. Uses T28's owner and
-position. Done: on the monorepo fixture, two workspaces are seeded from two different siblings
-and the project that exists on one branch only is left alone; the oracle is green for both.
 
 ### T38. Monorepo: `orphans` for a project that is gone
 

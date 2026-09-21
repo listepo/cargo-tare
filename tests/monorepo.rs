@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use dunnage::eco::cargo::CARGO;
 use dunnage::inventory;
 use dunnage::seed;
+use dunnage::session::{Session, Settings};
 use tempfile::TempDir;
 
 mod common;
@@ -121,4 +122,64 @@ fn seed_finds_the_same_position_in_a_sibling_checkout() {
         seed::choose(&mono.repo.join("services/api"), &CARGO),
         Some(mono.wt.join("services/api/target"))
     );
+}
+
+/// Moves the entries of every profile dir of `target` back by `days`: what `last_used` reads.
+fn built_days_ago(target: &Path, days: u64) {
+    let then = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 24 * 60 * 60);
+    for profile in dunnage::eco::cargo::profile_dirs(target).unwrap() {
+        for entry in fs::read_dir(&profile).unwrap() {
+            let entry = fs::File::open(entry.unwrap().path()).unwrap();
+            entry.set_modified(then).unwrap();
+        }
+    }
+}
+
+#[test]
+fn seed_fills_every_position_from_the_sibling_that_built_it_last() {
+    let mono = Mono::new();
+    // `api` was built last in the worktree, `cli` only ever in the main checkout, and `legacy`
+    // exists in the main checkout only: absent on the new branch.
+    built_days_ago(&mono.repo.join("services/api/target"), 5);
+    fake_target(&mono.repo, "tools/legacy", 16, 0);
+    let fresh = mono.repo.parent().unwrap().join("fresh");
+    git(&mono.repo, &["worktree", "add", fresh.to_str().unwrap()]);
+    for project in ["services/api", "tools/cli"] {
+        fs::create_dir_all(fresh.join(project)).unwrap();
+    }
+
+    let chosen: Vec<(PathBuf, PathBuf)> = seed::positions(&fresh)
+        .into_iter()
+        .map(|position| (position.project, position.source))
+        .collect();
+    assert_eq!(
+        chosen,
+        [
+            (
+                fresh.join("services/api"),
+                mono.wt.join("services/api/target")
+            ),
+            (fresh.join("tools/cli"), mono.repo.join("tools/cli/target")),
+        ]
+    );
+
+    let state = mono.repo.parent().unwrap().join("state");
+    let session = Session::open(Settings {
+        index: state.join("hashes.bin"),
+        ..Settings::default()
+    });
+    let done = session.seed(&fresh, None, false).unwrap();
+
+    assert_eq!(done.len(), 2);
+    for project in ["services/api", "tools/cli"] {
+        assert!(
+            fresh
+                .join(project)
+                .join("target/debug/deps/libx.rlib")
+                .is_file()
+        );
+    }
+    assert!(!fresh.join("tools/legacy").exists());
+    // Everything is filled now: a second seed has nothing to do and says so.
+    assert!(session.seed(&fresh, None, false).is_err());
 }

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
 
-use crate::eco::Ecosystem;
+use crate::eco::{self, Ecosystem};
 use crate::engine::ProfileLock;
 use crate::index::HashIndex;
 use crate::inventory;
@@ -66,6 +66,85 @@ pub fn choose(checkout: &Path, eco: &dyn Ecosystem) -> Option<PathBuf> {
         }
     }
     best.map(|(_, target)| target)
+}
+
+/// One place in a checkout that a sibling checkout can fill: the project here, its adapter, and
+/// the sibling's build dir for the same project.
+pub struct Position {
+    pub project: PathBuf,
+    pub eco: &'static dyn Ecosystem,
+    pub source: PathBuf,
+}
+
+/// Every position of `checkout` (a checkout root) that a sibling checkout of the same repository
+/// can seed, sorted by project. A position counts when a sibling has a build dir at its adapter's
+/// default place for a project, the same project dir exists in `checkout`, and it has no build
+/// dir yet; a project absent on this branch is left out. Each position comes from the sibling
+/// that built *it* most recently — no single checkout is the newest everywhere.
+pub fn positions(checkout: &Path) -> Vec<Position> {
+    let Some(common) = inventory::family(checkout) else {
+        return Vec::new();
+    };
+    let mut best: Vec<(u64, Position)> = Vec::new();
+    for sibling in inventory::checkouts(&common) {
+        let sibling = sibling.canonicalize().unwrap_or(sibling);
+        if sibling == checkout {
+            continue;
+        }
+        for (build_dir, eco) in eco::discover(std::slice::from_ref(&sibling)) {
+            let Some(owner) = eco.owner(&build_dir) else {
+                continue;
+            };
+            // A worktree nested inside this sibling is a sibling of its own.
+            if checkout_root(&owner.project) != Some(sibling.as_path())
+                || eco.build_dir(&owner.project).as_ref() != Some(&build_dir)
+            {
+                continue;
+            }
+            let Ok(relative) = owner.project.strip_prefix(&sibling) else {
+                continue;
+            };
+            let project = checkout.join(relative);
+            if !project.is_dir() || eco.build_dir(&project).is_none_or(|dir| dir.exists()) {
+                continue;
+            }
+            let built = eco
+                .units(&build_dir)
+                .into_iter()
+                .flatten()
+                .filter_map(|unit| eco.last_used(&unit))
+                .max()
+                // A build dir nobody ever built is still better than nothing.
+                .unwrap_or(0);
+            let seen = best
+                .iter_mut()
+                .find(|(_, seen)| seen.project == project && seen.eco.name() == eco.name());
+            match seen {
+                Some((when, _)) if *when >= built => {}
+                Some(slot) => {
+                    *slot = (
+                        built,
+                        Position {
+                            project,
+                            eco,
+                            source: build_dir,
+                        },
+                    )
+                }
+                None => best.push((
+                    built,
+                    Position {
+                        project,
+                        eco,
+                        source: build_dir,
+                    },
+                )),
+            }
+        }
+    }
+    let mut positions: Vec<Position> = best.into_iter().map(|(_, position)| position).collect();
+    positions.sort_by(|a, b| a.project.cmp(&b.project));
+    positions
 }
 
 /// Copies `source` (a build dir) to where `eco` puts the build dir of `checkout`. The destination

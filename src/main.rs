@@ -410,8 +410,7 @@ fn seed_into(
     let checkout = dir.unwrap_or_else(|| PathBuf::from("."));
     let session = open(index, &load_config(None)?)?;
     let done = session.seed(&checkout, from.as_deref(), dry_run)?;
-    print_seeding(&done, dry_run);
-    Ok(Done::busy_if(!done.seeded.busy.is_empty()))
+    print_seedings(&done, dry_run)
 }
 
 /// `dunnage worktree add`: the session adds and seeds; this says what came of each.
@@ -429,12 +428,21 @@ fn worktree_add(
             added.worktree.display()
         )
     })?;
-    let Some(done) = seeding else {
+    if seeding.is_empty() {
         println!("  nothing to seed from: no other checkout of this repository has a target there");
         return Ok(Done::Everything);
-    };
-    print_seeding(&done, dry_run);
-    Ok(Done::busy_if(!done.seeded.busy.is_empty()))
+    }
+    print_seedings(&seeding, dry_run)
+}
+
+/// Every position seeded; busy when a build held any source unit.
+fn print_seedings(done: &[session::Seeding], dry_run: bool) -> Result<Done> {
+    for seeding in done {
+        print_seeding(seeding, dry_run);
+    }
+    Ok(Done::busy_if(
+        done.iter().any(|seeding| !seeding.seeded.busy.is_empty()),
+    ))
 }
 
 fn print_seeding(done: &session::Seeding, dry_run: bool) {

@@ -284,9 +284,9 @@ pub struct Seeding {
 pub struct WorktreeAdded {
     /// The new worktree, as git lists it.
     pub worktree: PathBuf,
-    /// `None`: no other checkout of the repository has a target at that place to seed from.
-    /// An error here leaves the worktree in place; only the seeding failed.
-    pub seeding: Result<Option<Seeding>>,
+    /// One per position filled; empty when no other checkout of the repository has a build
+    /// dir this one lacks. An error here leaves the worktree in place; only the seeding failed.
+    pub seeding: Result<Vec<Seeding>>,
 }
 
 pub struct Session {
@@ -350,11 +350,25 @@ impl Session {
     }
 
     /// Fill the empty target of `checkout` from `from` (a checkout or a target dir), or from the
-    /// family's most recently built target.
-    pub fn seed(&self, checkout: &Path, from: Option<&Path>, dry_run: bool) -> Result<Seeding> {
-        // The one adapter so far; seeding every position of a monorepo checkout is T37.
-        let eco: &dyn Ecosystem = &CARGO;
+    /// family's most recently built target. A checkout root with no `from` gets every position
+    /// a sibling can fill, each from the sibling that built it last ([`seed::positions`]).
+    pub fn seed(
+        &self,
+        checkout: &Path,
+        from: Option<&Path>,
+        dry_run: bool,
+    ) -> Result<Vec<Seeding>> {
         let checkout = canonical(checkout)?;
+        if from.is_none() && checkout.join(".git").exists() {
+            let done = self.seed_positions(&checkout, dry_run)?;
+            ensure(!done.is_empty(), || {
+                "no other checkout of this repository has a build dir this one lacks; name one with --from"
+                    .into()
+            })?;
+            return Ok(done);
+        }
+        // Seeding one dir names no adapter; cargo is the one whose build dir `--from` means.
+        let eco: &dyn Ecosystem = &CARGO;
         let source = match from {
             Some(path) => {
                 let path = canonical(path)?;
@@ -380,15 +394,47 @@ impl Session {
         if !dry_run {
             self.save(&mut hashes)?;
         }
-        Ok(Seeding {
+        Ok(vec![Seeding {
             target: eco.build_dir(&checkout).unwrap_or(checkout),
             seeded,
-        })
+        }])
+    }
+
+    /// Every position of the checkout root `checkout` that a sibling can fill, under one run
+    /// lock. Empty when there is none.
+    fn seed_positions(&self, checkout: &Path, dry_run: bool) -> Result<Vec<Seeding>> {
+        let positions = seed::positions(checkout);
+        if positions.is_empty() {
+            return Ok(Vec::new());
+        }
+        let _lock = self.lock()?;
+        let mut hashes = HashIndex::load(&self.settings.index);
+        let mut done = Vec::with_capacity(positions.len());
+        for position in positions {
+            let seed::Position {
+                project,
+                eco,
+                source,
+            } = position;
+            let seeded =
+                seed::seed(&project, &source, eco, &mut hashes, dry_run).map_err(Error::at(
+                    format_args!("seeding {} from {}", project.display(), source.display()),
+                ))?;
+            done.push(Seeding {
+                target: eco.build_dir(&project).unwrap_or(project),
+                seeded,
+            });
+        }
+        if !dry_run {
+            self.save(&mut hashes)?;
+        }
+        Ok(done)
     }
 
     /// `git worktree add <git_args>`, run in `dir`, then `seed` into the new worktree at the
     /// place `dir` has inside its own checkout — so a workspace in a subdir is seeded where it
-    /// is. Nothing is seeded when git fails; `dry_run` goes to `seed` only.
+    /// is, and a run from the checkout root seeds every position. Nothing is seeded when git
+    /// fails; `dry_run` goes to `seed` only.
     pub fn worktree_add(
         &self,
         dir: &Path,
@@ -412,10 +458,15 @@ impl Session {
             .into_iter()
             .find(|listed| !before.contains(listed))
             .ok_or_else(|| Error::Invalid("git worktree add added no worktree".into()))?;
-        let checkout = worktree.join(inside);
-        let seeding = match seed::choose(&checkout, &CARGO) {
-            Some(source) => self.seed(&checkout, Some(&source), dry_run).map(Some),
-            None => Ok(None),
+        let checkout = worktree.join(&inside);
+        // From the checkout root every position; from a subdir only the one it is.
+        let seeding = if inside.as_os_str().is_empty() {
+            self.seed_positions(&checkout, dry_run)
+        } else {
+            match seed::choose(&checkout, &CARGO) {
+                Some(source) => self.seed(&checkout, Some(&source), dry_run),
+                None => Ok(Vec::new()),
+            }
         };
         Ok(WorktreeAdded { worktree, seeding })
     }

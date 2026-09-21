@@ -326,6 +326,9 @@ Done in T29: `Guard::Quiet` works, with the tier of `DESIGN.md`, "Safety tier wi
 lock"; `Ecosystem::tools` names the processes the check looks for. No adapter uses it yet.
 Done in T33: `Guard::Immutable` and the `Store` adapter behind `--store`; `DESIGN.md`,
 "Immutable stores".
+Done in T37: `seed::positions` seeds every position of a checkout root, each from the sibling
+that built it last, with the adapter the shared walk found; `seed <dir>` with one dir still
+assumes cargo.
 
 The daemon's loop lives in the binary's half because only a process has triggers; everything
 it *does* is a `Session` call. How the tool is invoked without cargo is settled with the first

@@ -416,6 +416,13 @@ Not a pass: it runs on its own, before there is anything to shrink.
   checkout registered under it (the repository itself and each `worktrees/<name>/gitdir`), looks
   in each one at the same relative path the destination has inside its own checkout — a
   workspace can sit anywhere in a repository — and takes the target built most recently.
+- **Every position.** In a checkout root with no `--from`, `positions` runs the shared walk
+  (`eco::discover`) over each sibling checkout and keeps the build dirs that sit at their
+  adapter's default place (`build_dir(owner) == dir`) and whose owner belongs to that sibling,
+  not to a worktree nested inside it. The same project path must be a dir in the destination
+  with no build dir yet: a project deleted or absent on this branch is left alone. Per position
+  the sibling that built it last wins, so two workspaces may come from two checkouts. All
+  positions are copied under one run lock. `worktree add` from a checkout root does the same.
 - **The copy is a clone.** `fs::copy` is `clonefile` on APFS, so the new target shares every
   block with the old one and the volume loses nothing. Dirs are recreated, symlinks are
   recreated as symlinks, and `incremental/`, `.cargo-lock` and leftover `.dunnage-tmp-` files are

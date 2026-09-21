@@ -129,11 +129,18 @@ the family's most recently built target is used. A checkout that already has a t
 refused. Workspace members and path dependencies are still compiled — their absolute paths
 changed — and everything else is reused.
 
+Run in a checkout root without `--from`, `seed` fills every position a sibling can: each build
+dir that some other checkout has for a project which exists here and has no build dir yet, and
+each from the checkout that built *that* project most recently. A project absent on this branch
+is skipped. In a monorepo with several workspaces this seeds all of them in one run; a
+checkout that has nothing left to fill is an error, as before.
+
 ### `dunnage worktree add [--dry-run] [--index FILE] GIT ARGS...`
 
-`git worktree add GIT ARGS...`, then `seed` into the new worktree in one step. Run it from a
-workspace inside the repository: the new worktree is seeded at the same relative path, from the
-most recently built checkout. Git's own failure is shown as is and nothing is seeded; with no
+`git worktree add GIT ARGS...`, then `seed` into the new worktree in one step. Run from a
+workspace inside the repository, the new worktree is seeded at the same relative path, from the
+most recently built checkout; run from the checkout root, every position is seeded, as `seed`
+in a checkout root does. Git's own failure is shown as is and nothing is seeded; with no
 built checkout to copy from the worktree is still added and the tool says there was nothing to
 seed. `--dry-run` still adds the worktree and only reports what seeding would copy. Only the
 dependencies whose sources stay where they are — registry crates, a vendor dir outside the
