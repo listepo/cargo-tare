@@ -929,3 +929,51 @@ the_docs` here): fixture builds racing on 4 cores, not a pass.
 Not done: nothing from the card. `docs/bench.md` gained no row for this — the VM has no real
 cargo home to measure and pointing the tool at the machine's own is not something a test or a
 benchmark here may do.
+
+### T23. User guide, ecosystem study and T21 readiness analysis
+
+Asked for directly by the creator, so it went from request to done without a stop in
+`roadmap.md`. Documentation only; no code, manifest or dependency changed.
+
+- `docs/usage.md` — install, the first five minutes, which passes are lossless and which delete,
+  every command and option, exit codes, recipes, configuration, troubleshooting. The option
+  tables were written from the binary's own `--help` output.
+- `docs/ecosystems.md` — a desk study of whether the passes fit C / C++, .NET, Go, Swift / Xcode,
+  content-addressed stores, the JVM and Bazel: what in the codebase is cargo-specific, the six
+  questions an adapter has to answer, a verdict per pass per ecosystem, the existing tools and
+  the gap they leave. Unverified claims are marked; nothing was measured. The follow-up is in
+  `ideas.md`, not approved.
+- `README.md` — the stale "Planned: `cargo tare advise`" block is gone (it has worked since
+  T12), the status line says what works where and points at both documents.
+- `plan.md` — T21's card gained a readiness analysis: eleven open points, the first of which
+  (where Windows tests run) is the creator's decision and the task's real blocker.
+
+Verified: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
+(127 passed on macOS) and both `check-cross` targets were green on macOS before the documents were
+written; the documents change nothing those commands read.
+
+### T42. Rename the project: `cargo-tare` becomes `dunnage`
+
+Asked for by the creator: a name that fits a tool no longer tied to cargo, and that nobody
+holds. `tare` itself is taken on crates.io. `dunnage` — the loose packing stuffed around the
+cargo in a hold: it takes up room and is not the goods — keeps the metaphor and was free on
+crates.io, Homebrew (formula and cask), npm and PyPI when checked, with only zero-star
+repositories of that name on GitHub. Runners-up that were also free: `unladen` (crates.io and
+Homebrew only), `plimsoll` and `freeboard` (both taken on npm and PyPI; `freeboard` is a
+6.5k-star project).
+
+What changed: the package, the library crate (`dunnage`) and the binary (`dunnage`, invoked
+directly instead of as `cargo tare`); the config and cache dirs (`~/.config/dunnage`,
+`~/.cache/dunnage` — neither existed under the old name on the creator's machine, so nothing
+was migrated); the temp prefix (`.dunnage-tmp-`), the hash index magic, the launchd label, the
+bench scripts, every living document and `rust.md`. `cargo dunnage <args>` still works through
+a `cargo-dunnage` link to the binary: cargo passes the subcommand name first and `main` drops
+it, which a new test in `tests/cli.rs` holds. Left alone on purpose: `done.md` above this entry
+and `docs/spike/`, which are records of what was run under the old name.
+
+The creator renamed the GitHub repository to `listepo/dunnage` (`gh repo rename`, which also
+moved `origin`); `plan.md` and `docs/usage.md` carry the new URL. The local directory name is
+the creator's to change.
+
+Verified on macOS: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+`cargo test` (128 passed, one of them new) and both `check-cross` targets.

@@ -20,7 +20,7 @@ too slow, see `DESIGN.md`).
 
 | Package | Where | Source | Why here |
 | --- | --- | --- | --- |
-| clap | local | https://github.com/clap-rs/clap | CLI parsing, `cargo tare` subcommand wrapper |
+| clap | local | https://github.com/clap-rs/clap | CLI parsing |
 | rustix | local, Linux only (`[target.'cfg(target_os = "linux")'.dependencies]`) | https://github.com/bytecodealliance/rustix | `FICLONE` and `FS_IOC_GET/SETFLAGS` without hand-written `unsafe` |
 | walkdir | local | https://github.com/BurntSushi/walkdir | Walk a profile dir without following symlinks or leaving the device |
 | anyhow | local | https://github.com/dtolnay/anyhow | Error context in the binary |

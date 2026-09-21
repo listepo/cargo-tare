@@ -1,8 +1,9 @@
-# cargo-tare — design
+# dunnage — design
 
-Tare: the weight of the packaging, not the goods. `target/` is packaging.
+Dunnage: the loose packing stuffed around the cargo in a hold. `target/` is dunnage.
+The project was called `cargo-tare` until T42; `done.md` and `docs/spike/` keep the old name.
 
-`cargo-tare` shrinks Cargo build directories without slowing builds down, by combining several
+`dunnage` shrinks Cargo build directories without slowing builds down, by combining several
 independent approaches in one planner instead of chaining separate tools. Measurements behind
 every choice are in `docs/research.md`.
 
@@ -102,7 +103,7 @@ compressed, smaller than 8 KB, or younger than `min-age`. Backend: the `applesau
 the member's mtime / mode / flags, then `rename(2)` over each path of the member's hardlink group.
 Clones are copy-on-write, so a later in-place write by rustc cannot leak into siblings.
 
-**seed** — `cargo tare seed --from <worktree> [<new-worktree>]`, or automatic source selection
+**seed** — `dunnage seed --from <worktree> [<new-worktree>]`, or automatic source selection
 inside the family (largest recently built target). Recursive clone of the target dir, excluding
 `incremental/` and lock files. Verified in T2: registry dependencies are fresh in the new
 worktree, only workspace members rebuild (their sources have new mtimes; their unit hashes are
@@ -137,7 +138,7 @@ for filesystems without reflinks.
 2. Re-check `(size, mtime)` of source and member immediately before replacing; any change aborts
    that group.
 3. Replacement is always temp-file + `rename` inside the same directory; a crash leaves either the
-   old or the new file, plus at most a `.tare-tmp-*` file that the next run removes.
+   old or the new file, plus at most a `.dunnage-tmp-*` file that the next run removes.
 4. mtime and mode of every replaced path are preserved. T2: a workspace-member rlib with a new
    mtime makes its dependents rebuild; registry artifacts are not mtime-checked, but the rule is
    applied to everything. BSD flags: the compressed flag follows the content (a clone of a
@@ -178,7 +179,7 @@ and messages with paths through `assert_cmd` + `predicates` in `tests/cli.rs`.
 2. **Scan.** `model::scan` turns each locked profile dir into `Inode`s: `Stamp`
    (`dev`, `ino`, `size`, `mtime`), mode, flags, link count, allocated bytes and every path found.
    Symlinks are not followed, other devices are not entered, `.cargo-lock` is left out, and
-   `.tare-tmp-*` leftovers are collected and removed (not on `--dry-run`).
+   `.dunnage-tmp-*` leftovers are collected and removed (not on `--dry-run`).
 3. **Plan.** Each `Pass` gets the scanned profiles and returns `Action`s without touching the
    disk. A lossy pass is asked only when named in `Options::lossy`. After a pass that applied
    anything the profiles are rescanned, so the next pass sees the new inodes.
@@ -258,14 +259,14 @@ clone is better and needs no permission.
 
 The **index** maps `(device, inode)` to `(size, mtime, hash, shared)`; a lookup with a different
 size or mtime misses, so a rewritten file is rehashed and loses its shared mark. It is one flat
-file of fixed little-endian records behind a magic string (`~/.cache/cargo-tare/hashes-v1.bin`,
+file of fixed little-endian records behind a magic string (`~/.cache/dunnage/hashes-v1.bin`,
 `--index` to override), written through a temp file and `rename`, saved on `--dry-run` too. It is
 only a cache: a missing, truncated or foreign file reads as empty.
 
 Why the `shared` mark exists: APFS cannot be asked whether two files share blocks, and a clone is
 a different inode with equal content — without the mark every run would clone everything again
 and report savings that are not there. Known limits: two clusters shared by separate runs are not
-merged with each other; a target seeded by `cp -c` or `cargo tare seed` is unknown to the index
+merged with each other; a target seeded by `cp -c` or `dunnage seed` is unknown to the index
 and is cloned once more on its first run (T8 can register seeded inodes); losing the index costs
 one full rehash and one redundant round of cloning; like cargo itself, the index trusts
 `(size, mtime)`, so a file rewritten with the same size within the same nanosecond timestamp
@@ -312,7 +313,7 @@ Not a pass: it runs on its own, before there is anything to shrink.
   workspace can sit anywhere in a repository — and takes the target built most recently.
 - **The copy is a clone.** `fs::copy` is `clonefile` on APFS, so the new target shares every
   block with the old one and the volume loses nothing. Dirs are recreated, symlinks are
-  recreated as symlinks, and `incremental/`, `.cargo-lock` and leftover `.tare-tmp-` files are
+  recreated as symlinks, and `incremental/`, `.cargo-lock` and leftover `.dunnage-tmp-` files are
   left behind: a cache of another checkout's build, a lock that is not ours, and rubbish.
 - **Under the source's locks.** Every profile dir of the source is locked with
   `ProfileLock::try_acquire` for the length of the walk; one that a build holds is reported and
@@ -542,9 +543,9 @@ because measuring them costs a second full walk.
 ## CLI surface
 
 ```
-cargo tare status [--json] [--cargo-home [DIR]] [ROOT]...  # inventory, families, potential
+dunnage status [--json] [--cargo-home [DIR]] [ROOT]...  # inventory, families, potential
                                                           # savings; read-only
-cargo tare run [--dry-run] [--lossy <PASS>]... [--index <FILE>] [<ROOT>]...
+dunnage run [--dry-run] [--lossy <PASS>]... [--index <FILE>] [<ROOT>]...
                [--config <FILE>] [--json]          # file: see below; json: the report as data
                [--cargo-home [DIR]]                # compress the registry sources too
                [--evict-idle-days <N>] [--evict-max-total-gib <N>]   # with --lossy evict
@@ -552,12 +553,12 @@ cargo tare run [--dry-run] [--lossy <PASS>]... [--index <FILE>] [<ROOT>]...
                [--incremental-idle-days <N>]        # with --lossy incremental
                                                     # --lossy orphans: no threshold
                [--pass <PASS>]... [--min-age <SECS>] [--min-size <BYTES>]  # benchmarks
-cargo tare seed [--from <DIR>] [--dry-run] [--index <FILE>] [<DIR>]  # clone a sibling's target
-cargo tare advise [--json] [ROOT]...  # what makes these targets bigger than they need to be
+dunnage seed [--from <DIR>] [--dry-run] [--index <FILE>] [<DIR>]  # clone a sibling's target
+dunnage advise [--json] [ROOT]...  # what makes these targets bigger than they need to be
 ```
 
-Config (`src/config.rs`): `$XDG_CONFIG_HOME/cargo-tare/config.toml`, else
-`~/.config/cargo-tare/config.toml` — `roots`, `lossy`, `min-age`, `min-size`,
+Config (`src/config.rs`): `$XDG_CONFIG_HOME/dunnage/config.toml`, else
+`~/.config/dunnage/config.toml` — `roots`, `lossy`, `min-age`, `min-size`,
 `[evict] idle-days / max-total-gib / whole-target`, `[incremental] idle-days`, `[family."<dir>"] skip`. Keys are
 kebab-case and unknown ones are an error: a typo that silently does nothing is worse than a stop.
 A flag always wins over the file, and a file named with `--config` must exist. Only `skip` is per

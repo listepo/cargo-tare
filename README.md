@@ -1,10 +1,12 @@
-# cargo-tare
+# dunnage
 
-Tare: the weight of the packaging, not the goods. `cargo-tare` takes the dead weight out of Cargo
-`target/` directories — without deleting what you still build with and without slowing builds.
+Dunnage: the loose packing stuffed around the cargo in a hold — it takes up room and is not the
+goods. `dunnage` takes that dead weight out of Cargo `target/` directories — without deleting what you still build with and without slowing builds.
 
-Status: early. `status`, `advise`, `seed`, compress, dedupe and the opt-in `orphans` / `evict` /
-`incremental` work; the rest is in `plan.md`.
+Status: early. Every command and pass below works on macOS and Linux; Windows builds and reports
+but plans no work until `T21` in `plan.md`. A step-by-step guide is in `docs/usage.md`; whether
+the same passes fit C++, .NET, Go and other build systems is studied in `docs/ecosystems.md`,
+and the architecture that would carry them, monorepos included, in `docs/architecture.md`.
 
 ## Why
 
@@ -40,20 +42,20 @@ hardlink groups as one unit.
 Works today:
 
 ```
-cargo tare status ~/code            # read-only: every target under the root
-cargo tare status --cargo-home ~/code  # and what the registry sources weigh
-cargo tare status --json ~/code
-cargo tare run --dry-run ~/code     # plan only
-cargo tare run ~/code
-cargo tare run [--dry-run] [--pass <PASS>]... [--lossy <PASS>]... [--index <FILE>]
+dunnage status ~/code            # read-only: every target under the root
+dunnage status --cargo-home ~/code  # and what the registry sources weigh
+dunnage status --json ~/code
+dunnage run --dry-run ~/code     # plan only
+dunnage run ~/code
+dunnage run [--dry-run] [--pass <PASS>]... [--lossy <PASS>]... [--index <FILE>]
                [--config <FILE>] [--json] [<ROOT>...]
-cargo tare advise ~/code            # read-only: what makes these targets bigger
-cargo tare seed [--from <DIR>] [--dry-run] [--index <FILE>] [<DIR>]
+dunnage advise ~/code            # read-only: what makes these targets bigger
+dunnage seed [--from <DIR>] [--dry-run] [--index <FILE>] [<DIR>]
               [--min-age <SECS>] [--min-size <BYTES>]
-cargo tare run --cargo-home ~/code     # and the registry sources in ~/.cargo
-cargo tare run --dry-run --lossy orphans ~/code
-cargo tare run --dry-run --lossy evict --evict-idle-days 30 ~/code
-cargo tare run --lossy evict --evict-max-total-gib 50 ~/code
+dunnage run --cargo-home ~/code     # and the registry sources in ~/.cargo
+dunnage run --dry-run --lossy orphans ~/code
+dunnage run --dry-run --lossy evict --evict-idle-days 30 ~/code
+dunnage run --lossy evict --evict-max-total-gib 50 ~/code
 ```
 
 `status` lists cargo target dirs grouped by family (a repository and its worktrees): size on disk
@@ -69,7 +71,7 @@ printed at the end. A `<ROOT>` is searched for targets; a target dir itself work
 It takes cargo's own lock, skips profile dirs with a running build, leaves alone files younger
 than one hour or too small to win a block (8 KB for compress, 4 KB for dedupe), works on private
 copies and swaps them in with `rename`, keeps mtimes so nothing is rebuilt, and remembers content
-hashes in `~/.cache/cargo-tare/hashes-v1.bin` so the next run reads only new files.
+hashes in `~/.cache/dunnage/hashes-v1.bin` so the next run reads only new files.
 Only dirs carrying cargo's own `CACHEDIR.TAG` count as targets. `--lossy` enables a
 pass that deletes rebuildable data; lossless passes need no flag. How the engine keeps a target
 safe is described in `DESIGN.md`, "Engine" and "Safety invariants".
@@ -85,7 +87,7 @@ file points at a missing worktree record). Nothing outside `target/` is touched 
 checkout can hold work git can no longer report. No threshold, and every removal is printed
 with its reason on a dry run too.
 
-**seed** copies instead of deleting. In a fresh worktree, `cargo tare seed` clones the target of
+**seed** copies instead of deleting. In a fresh worktree, `dunnage seed` clones the target of
 a sibling checkout of the same repository — the one built most recently, at the same place
 inside it — into yours. On APFS every file is a `clonefile`, so the new target shares its blocks
 with the old one and costs no disk space until something rewrites it. `incremental/`, the lock
@@ -143,8 +145,8 @@ running `cargo fetch` stops the pass instead of racing it. Nothing is deleted an
 content or mtime changes, which is what decides whether cargo unpacks a crate again; it does not.
 Measured on a clone of a real home (`docs/bench.md`): 1.52 GiB of registry sources down to
 469 MiB, 69% off, and the build afterwards reports nothing stale and unpacks nothing again.
-The run needs no target dirs of its own, so `cargo tare run --cargo-home` alone is a valid run,
-and `cargo tare status --cargo-home` reports the same dirs without touching them (it is opt-in
+The run needs no target dirs of its own, so `dunnage run --cargo-home` alone is a valid run,
+and `dunnage status --cargo-home` reports the same dirs without touching them (it is opt-in
 because measuring them costs a second walk).
 
 **advise** changes nothing: it reads the manifests and cargo configs of the projects it finds
@@ -164,7 +166,7 @@ profile dir was skipped because a build held its lock — what a scheduled run n
 
 ## Configuration
 
-`$XDG_CONFIG_HOME/cargo-tare/config.toml`, or `~/.config/cargo-tare/config.toml`. Every key is
+`$XDG_CONFIG_HOME/dunnage/config.toml`, or `~/.config/dunnage/config.toml`. Every key is
 optional and every flag wins over the file; `--config <FILE>` reads another file instead, and a
 file named there must exist. An unknown key stops the run rather than being ignored.
 
@@ -190,12 +192,6 @@ skip = true                 # never touch this repository and its worktrees
 A family is a repository and its worktrees, keyed by the git common dir `status` prints (a target
 without a repository is its own family). `skip` is the only per-family key: the `evict` cap and
 the idle rules are decided over everything under the roots at once, so they stay global.
-
-Planned:
-
-```
-cargo tare advise          # config findings
-```
 
 ## Platforms
 
@@ -252,18 +248,18 @@ The lossless passes are safe to run unattended: they never delete, they skip a p
 running build, and exit code `2` says a build was in the way. A `just` recipe after a build:
 
 ```just
-tare:
-    cargo tare run ~/code || test $? -eq 2
+dunnage:
+    dunnage run ~/code || test $? -eq 2
 ```
 
-Or on macOS, every night, with launchd (`~/Library/LaunchAgents/dev.cargo-tare.plist`):
+Or on macOS, every night, with launchd (`~/Library/LaunchAgents/dev.dunnage.plist`):
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
-  <key>Label</key><string>dev.cargo-tare</string>
+  <key>Label</key><string>dev.dunnage</string>
   <key>ProgramArguments</key>
-  <array><string>/usr/bin/env</string><string>cargo</string><string>tare</string>
+  <array><string>/usr/bin/env</string><string>dunnage</string>
          <string>run</string><string>/Users/me/code</string></array>
   <key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer></dict>
   <key>Nice</key><integer>10</integer>

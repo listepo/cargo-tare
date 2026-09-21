@@ -61,7 +61,7 @@ it recovers 407 MiB rather than the full gigabyte.
 A second machine, a different workload, and the reason the table above has a twin: on btrfs the
 win does not show up where macOS shows it. Measured in a Linux VM (Ubuntu 24.04, 4 cores, a
 6 GiB btrfs loopback image mounted with default options) on an unshared copy of a real cargo
-target — `cargo-tare`'s own, 1.33 GiB, one checkout and therefore no family for dedupe to
+target — `dunnage`'s own, 1.33 GiB, one checkout and therefore no family for dedupe to
 compare against.
 
 | Pass | `du` before | `du` after | `du` delta | Free space delta | Wall clock |
@@ -127,7 +127,7 @@ them up — but a `run` that loops until it stops finding work would finish the 
 the repository, not another worktree: its own `.git`, so its own family, holding the same
 dependencies built the same way — two unrelated projects, as far as the tool is concerned.
 
-This part was measured on **`cargo-tare` itself** rather than on that workspace: the machine had
+This part was measured on **`dunnage` itself** rather than on that workspace: the machine had
 10 GiB free at the time and three checkouts of it do not fit under the script's own
 free-space guard. The targets are therefore an order of magnitude smaller, and only the ratio is
 worth reading.
@@ -190,7 +190,7 @@ the fixture test only.
 sccache answers a different question: it makes a *rebuild from scratch* about twice as fast, at
 the price of a slower first build and a 304 MiB cache of its own. It does not shrink a live
 target — its targets are smaller here only because a wrapper turns cargo's incremental
-compilation off. The two are complementary, and nothing in `cargo-tare` conflicts with it.
+compilation off. The two are complementary, and nothing in `dunnage` conflicts with it.
 
 ## What the defaults are worth
 
@@ -203,7 +203,7 @@ compilation off. The two are complementary, and nothing in `cargo-tare` conflict
 
 ## Not measured
 
-- **Seeded worktree** — `cargo tare seed` does not exist yet (T8).
+- **Seeded worktree** — `dunnage seed` does not exist yet (T8).
 - **Shared `build-dir`** — cargo's `build.build-dir` is nightly-only (`-Z build-dir`); this
   machine builds on stable, where the key is ignored. T12's `advise` reports exactly that.
 - **One workspace, one machine.** Every number above is that one workspace on one Apple Silicon laptop.

@@ -4,7 +4,7 @@ Approved work that is not yet in `plan.md`, mostly because the cargo feature it 
 stable. Stable at the time of writing: cargo 1.97–1.98. Version gates marked *estimate* have no
 official announcement — re-check the cargo changelog before moving an item into the plan.
 
-| # | Item | Cargo gate | Target tare version |
+| # | Item | Cargo gate | Target dunnage version |
 | --- | --- | --- | --- |
 | R1 | Unit-level `prune` | build-dir layout v2 on stable — reported for ~1.100, to be confirmed in the changelog | 0.3 |
 | R2 | Automated shared `build-dir` for worktree families | fine-grained build locking on stable — nightly only (`-Zfine-grain-locking`), *estimate* not before 1.102 | 0.4 |
@@ -12,6 +12,8 @@ official announcement — re-check the cargo changelog before moving an item int
 | R4 | Re-tune for `embed-metadata=no` | stabilization of `-Zembed-metadata=no` — nightly default since 2026-08, *estimate* not before 1.101 | 0.3 |
 | R5 | Retire passes that cargo takes over | cargo target / build-dir GC (rust-lang/cargo#5026) and per-user artifact cache (#5931) — no version announced | when they land |
 | R6 | Raise dedupe yield with path trimming | `trim-paths` profile option on stable — nightly only (`-Ztrim-paths`), no version announced | after it lands |
+| R7 | Publish 0.1: crates.io and a homebrew tap | none — waits for the creator's go-ahead and a license | 0.1 |
+| R8 | Embed the library in a build system | none — waits for the creator's go-ahead and a build system that wants it | after T36 |
 
 ### R1. Unit-level `prune`
 
@@ -23,7 +25,7 @@ no file-name parsing. Waits for layout v2 because the v1 layout mixes all units 
 ### R2. Automated shared `build-dir` for worktree families
 
 Today `advise` only suggests it, because one build lock serializes parallel agents. Once locking is
-per unit, `cargo tare` can write the family's `build.build-dir` config and garbage-collect the
+per unit, `dunnage` can write the family's `build.build-dir` config and garbage-collect the
 workspace-member units that removed worktrees leave behind (needs R1).
 
 ### R3. Symlink / shared-store mode
@@ -52,3 +54,26 @@ measured machine) because some rlibs / rmeta embed absolute paths such as `OUT_D
 `trim-paths` is stable, measure whether enabling it makes more artifacts byte-identical, and let
 `advise` recommend it if it does. First step when picked up: confirm the cause by diffing two
 differing rlibs.
+
+### R7. Publish 0.1: crates.io and a homebrew tap
+
+Was T27; the creator's answer was "not yet", so it waits here instead of sitting in the plan.
+
+`docs/usage.md` opens with "not on crates.io yet, clone and build". Before it can be:
+`Cargo.toml` has no `license` and the repository no `LICENSE` file — the creator picks one;
+`publish = false` goes; `repository`, `readme`, `keywords`, `categories` are filled in;
+`cargo publish --dry-run` is clean. The tap formula builds from the tagged source. Publishing is
+outward-facing and cannot be undone: the agent prepares everything and the creator runs, or
+explicitly orders, the `cargo publish` and the tag. Done: `cargo install dunnage` works and
+the install section of `docs/usage.md` and `README.md` says so.
+
+### R8. Embed the library in a build system
+
+Decided by the creator: the possibility is kept, the work is not started. What keeps it open is
+in T36 and `docs/architecture.md`, "Process model" — a library that never prints, exits or reads
+the environment, typed errors, a synchronous API with no runtime of its own, `clap` and `anyhow`
+behind the `cli` feature, and the reserved `Guard::Held` for a caller that already holds the
+build's lock. When picked up, the first questions are which build system and through what: a
+Rust caller links the crate; MSBuild, Gradle or CMake need a C ABI or a small command-line shim,
+and the reasons a post-build hook is a poor default (hot files, cross-dir passes, committed
+files) decide what such a caller is allowed to ask for.

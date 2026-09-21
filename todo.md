@@ -1,1 +1,18 @@
+- T24. A place where the Windows tests run
+- T36. Library boundary: one `Session` under every front end
 - T21. Windows: NTFS compression and ReFS block cloning
+- T25. `run` until nothing is left to do
+- T26. `dunnage worktree add`
+- T28. Adapter boundary: what is cargo and what is not
+- T29. A safety tier for build systems without a build lock
+- T30. Swift: SwiftPM `.build/` and Xcode DerivedData
+- T31. .NET: `bin/` and `obj/`
+- T32. C and C++: CMake, Meson and Ninja build dirs
+- T33. Compress an immutable content-addressed store
+- T34. Daemon mode: `dunnage daemon`
+- T37. Monorepo: `seed` every position
+- T38. Monorepo: `orphans` for a project that is gone
+- T39. Monorepo: grouped `status` and `skip-paths`
+- T40. Known build dirs: a persisted inventory
+- T41. Expire the hash index
+- T35. Go: `GOCACHE` and `GOMODCACHE`
