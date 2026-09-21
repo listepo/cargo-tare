@@ -49,9 +49,10 @@ dunnage run --dry-run ~/code     # plan only
 dunnage run ~/code
 dunnage run [--dry-run] [--pass <PASS>]... [--lossy <PASS>]... [--index <FILE>]
                [--config <FILE>] [--json] [<ROOT>...]
+               [--min-age <SECS>] [--min-size <BYTES>]
 dunnage advise ~/code            # read-only: what makes these targets bigger
 dunnage seed [--from <DIR>] [--dry-run] [--index <FILE>] [<DIR>]
-              [--min-age <SECS>] [--min-size <BYTES>]
+dunnage worktree add [--dry-run] [--index <FILE>] <GIT ARGS>...
 dunnage run --cargo-home ~/code     # and the registry sources in ~/.cargo
 dunnage run --dry-run --lossy orphans ~/code
 dunnage run --dry-run --lossy evict --evict-idle-days 30 ~/code

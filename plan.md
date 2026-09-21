@@ -12,7 +12,6 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | --- | --- | --- | --- | --- | --- |
 | T24 | todo | P1 | 3 | 0% | |
 | T21 | todo | P2 | 5 | 0% | |
-| T26 | todo | P2 | 2 | 0% | |
 | T28 | todo | P2 | 4 | 0% | |
 | T29 | todo | P2 | 4 | 0% | |
 | T30 | todo | P2 | 4 | 0% | |
@@ -123,17 +122,6 @@ State: `just check` is green (128 tests run on macOS) and both cross targets com
 Suggested split if the creator wants it smaller: (a) test environment + item 2 — now T24,
 (b) identity and the signature change, (c) NTFS compression, (d) ReFS cloning, (e) paths and
 docs.
-
-### T26. `dunnage worktree add`
-
-The recipe in `docs/usage.md` is two commands — `git worktree add`, then `seed` — and the second
-is the one people forget, which is exactly how a cold first build happens. One command that runs
-`git worktree add` with the arguments it was given and seeds the new checkout from the family.
-If git fails, nothing is seeded; if seeding fails, the worktree stays and the error says so.
-Done: a test on the fixture repository creates a worktree whose first build reports third-party
-units fresh; `--dry-run` passes through to `seed` only.
-
-The git call and the seeding are one `Session` operation (T36); the CLI only parses and prints.
 
 ### T28. Adapter boundary: what is cargo and what is not
 

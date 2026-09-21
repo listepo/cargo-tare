@@ -1053,3 +1053,45 @@ The troubleshooting entry is gone from `docs/usage.md`; `DESIGN.md` describes th
 
 Verified on macOS: `just check` (fmt, clippy `-D warnings`, `--lib --no-default-features`,
 137 tests) and `just check-cross`.
+
+### T26. `dunnage worktree add`
+
+The recipe in `docs/usage.md` is two commands — `git worktree add`, then `seed` — and the second
+is the one people forget, which is exactly how a cold first build happens. One command that runs
+`git worktree add` with the arguments it was given and seeds the new checkout from the family.
+If git fails, nothing is seeded; if seeding fails, the worktree stays and the error says so.
+Done: a test on the fixture repository creates a worktree whose first build reports third-party
+units fresh; `--dry-run` passes through to `seed` only.
+
+The git call and the seeding are one `Session` operation (T36); the CLI only parses and prints.
+
+#### Execution plan
+
+1. `Session::worktree_add(dir, git_args, dry_run)`: `git worktree add <args>` run in `dir` with
+   its output captured; the new worktree is the one `git worktree list --porcelain` shows after
+   and not before, so no git argument is ever parsed. The dir to seed is the new worktree plus
+   where `dir` sits inside its own checkout, so a workspace in a subdir of a monorepo is seeded
+   at the same place. Seeding is `Session::seed` with `seed::choose`; no sibling with a target
+   is a note, not an error. Git fails: an error, nothing seeded. Seeding fails: the worktree
+   stays and the error names it.
+2. CLI: `dunnage worktree add [--dry-run] [--index FILE] <GIT ARGS>...`; `--dry-run` goes to
+   `seed` only.
+3. `tests/worktree.rs` on a small repository: the seeded worktree builds less than one added
+   with plain git; `--dry-run` adds the worktree and copies nothing; a failing git call seeds
+   nothing and exits 1.
+4. `docs/usage.md` recipe and command; `DESIGN.md` seed section.
+
+#### Result
+
+`Session::worktree_add` and `dunnage worktree add [--dry-run] [--index FILE] <GIT ARGS>...` as
+planned. The shared fixture could not show the win: it has only path dependencies, and those
+are rebuilt in any new checkout because their mtimes are newer than the copied fingerprints. A
+vendored dependency inside the repository is rebuilt too (`PathToSourceChanged`). So
+`tests/worktree.rs` builds its own repository whose one dependency is a directory source outside
+it, as registry crates are: in the seeded worktree that dependency is fresh and only `app` is
+rebuilt; in a worktree added by plain git it is built again. Docs: `docs/usage.md` command and
+recipe, `DESIGN.md` seed section and synopsis, `README.md` synopsis.
+
+#### Verified
+
+`just check` and `just check-cross` green; the four tests in `tests/worktree.rs` pass.

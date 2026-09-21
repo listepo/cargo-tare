@@ -11,8 +11,10 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs::{self, File, TryLockError};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -246,6 +248,16 @@ pub struct Seeding {
     pub seeded: Seeded,
 }
 
+/// What `worktree_add` did.
+#[derive(Debug)]
+pub struct WorktreeAdded {
+    /// The new worktree, as git lists it.
+    pub worktree: PathBuf,
+    /// `None`: no other checkout of the repository has a target at that place to seed from.
+    /// An error here leaves the worktree in place; only the seeding failed.
+    pub seeding: Result<Option<Seeding>>,
+}
+
 pub struct Session {
     settings: Settings,
 }
@@ -336,6 +348,40 @@ impl Session {
             target: checkout.join(seed::TARGET),
             seeded,
         })
+    }
+
+    /// `git worktree add <git_args>`, run in `dir`, then `seed` into the new worktree at the
+    /// place `dir` has inside its own checkout — so a workspace in a subdir is seeded where it
+    /// is. Nothing is seeded when git fails; `dry_run` goes to `seed` only.
+    pub fn worktree_add(
+        &self,
+        dir: &Path,
+        git_args: &[OsString],
+        dry_run: bool,
+    ) -> Result<WorktreeAdded> {
+        let dir = canonical(dir)?;
+        let top = git(&dir, &["rev-parse".into(), "--show-toplevel".into()])?;
+        let top = canonical(Path::new(top.trim_end()))?;
+        let inside = dir
+            .strip_prefix(&top)
+            .unwrap_or(Path::new(""))
+            .to_path_buf();
+        // The new one is whichever git lists afterwards and did not before: no argument of
+        // `git worktree add` has to be understood here.
+        let before = worktrees(&dir)?;
+        let mut add: Vec<OsString> = vec!["worktree".into(), "add".into()];
+        add.extend(git_args.iter().cloned());
+        git(&dir, &add)?;
+        let worktree = worktrees(&dir)?
+            .into_iter()
+            .find(|listed| !before.contains(listed))
+            .ok_or_else(|| Error::Invalid("git worktree add added no worktree".into()))?;
+        let checkout = worktree.join(inside);
+        let seeding = match seed::choose(&checkout) {
+            Some(source) => self.seed(&checkout, Some(&source), dry_run).map(Some),
+            None => Ok(None),
+        };
+        Ok(WorktreeAdded { worktree, seeding })
     }
 
     fn run(&self, request: &Request, control: &Control, dry_run: bool) -> Result<RunReport> {
@@ -560,6 +606,41 @@ impl Session {
             .save(path)
             .map_err(Error::at(format_args!("saving {}", path.display())))
     }
+}
+
+/// `git <args>` in `dir`, its stdout on success. On failure git's own words are the error.
+fn git(dir: &Path, args: &[OsString]) -> Result<String> {
+    let out = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .map_err(Error::at("running git"))?;
+    if !out.status.success() {
+        let said = String::from_utf8_lossy(&out.stderr);
+        let args: Vec<_> = args.iter().map(|arg| arg.to_string_lossy()).collect();
+        return Err(Error::Invalid(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            said.trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Every worktree of the repository `dir` is in, canonical.
+fn worktrees(dir: &Path) -> Result<Vec<PathBuf>> {
+    let listed = git(
+        dir,
+        &["worktree".into(), "list".into(), "--porcelain".into()],
+    )?;
+    Ok(listed
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(|path| {
+            let path = PathBuf::from(path);
+            path.canonicalize().unwrap_or(path)
+        })
+        .collect())
 }
 
 /// One engine run over one group, told to the observer on both sides.

@@ -64,6 +64,9 @@ enum Cmd {
     /// Plan and apply the passes, one family of targets at a time; profile dirs with a running
     /// build are skipped
     Run(RunArgs),
+    /// Git worktrees that start warm
+    #[command(subcommand)]
+    Worktree(WorktreeCmd),
     /// Clone a sibling checkout's target into a fresh one, so its first build starts warm
     Seed {
         /// Where to copy from: a checkout or a target dir [default: the family's newest target]
@@ -78,6 +81,27 @@ enum Cmd {
         /// The checkout to seed [default: .]
         #[arg(value_name = "DIR")]
         dir: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorktreeCmd {
+    /// `git worktree add`, then `seed` the new worktree from the repository's newest target
+    Add {
+        /// Seed as a dry run: the worktree is still added
+        #[arg(long)]
+        dry_run: bool,
+        /// Content-hash cache [default: ~/.cache/dunnage/hashes-v1.bin]
+        #[arg(long, value_name = "FILE")]
+        index: Option<PathBuf>,
+        /// Passed to `git worktree add` as they are
+        #[arg(
+            value_name = "GIT ARGS",
+            required = true,
+            trailing_var_arg = true,
+            allow_hyphen_values = true
+        )]
+        git_args: Vec<std::ffi::OsString>,
     },
 }
 
@@ -157,6 +181,11 @@ fn main() -> ExitCode {
             index,
             dir,
         } => seed_into(from, dry_run, index, dir),
+        Cmd::Worktree(WorktreeCmd::Add {
+            dry_run,
+            index,
+            git_args,
+        }) => worktree_add(dry_run, index, &git_args),
     };
     match done {
         Ok(Done::Everything) => ExitCode::SUCCESS,
@@ -361,6 +390,34 @@ fn seed_into(
     let checkout = dir.unwrap_or_else(|| PathBuf::from("."));
     let session = open(index)?;
     let done = session.seed(&checkout, from.as_deref(), dry_run)?;
+    print_seeding(&done, dry_run);
+    Ok(Done::busy_if(!done.seeded.busy.is_empty()))
+}
+
+/// `dunnage worktree add`: the session adds and seeds; this says what came of each.
+fn worktree_add(
+    dry_run: bool,
+    index: Option<PathBuf>,
+    git_args: &[std::ffi::OsString],
+) -> Result<Done> {
+    let session = open(index)?;
+    let added = session.worktree_add(Path::new("."), git_args, dry_run)?;
+    println!("added worktree {}", added.worktree.display());
+    let seeding = added.seeding.with_context(|| {
+        format!(
+            "worktree {} is there, but seeding it failed",
+            added.worktree.display()
+        )
+    })?;
+    let Some(done) = seeding else {
+        println!("  nothing to seed from: no other checkout of this repository has a target there");
+        return Ok(Done::Everything);
+    };
+    print_seeding(&done, dry_run);
+    Ok(Done::busy_if(!done.seeded.busy.is_empty()))
+}
+
+fn print_seeding(done: &session::Seeding, dry_run: bool) {
     let seeded = &done.seeded;
     let verb = if dry_run { "would copy" } else { "copied" };
     println!(
@@ -374,7 +431,6 @@ fn seed_into(
     for dir in &seeded.busy {
         println!("  busy, not copied: {}", dir.display());
     }
-    Ok(Done::busy_if(!seeded.busy.is_empty()))
 }
 
 /// Flags over the config file: a flag always wins.

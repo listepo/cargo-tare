@@ -128,6 +128,16 @@ the family's most recently built target is used. A checkout that already has a t
 refused. Workspace members and path dependencies are still compiled — their absolute paths
 changed — and everything else is reused.
 
+### `dunnage worktree add [--dry-run] [--index FILE] GIT ARGS...`
+
+`git worktree add GIT ARGS...`, then `seed` into the new worktree in one step. Run it from a
+workspace inside the repository: the new worktree is seeded at the same relative path, from the
+most recently built checkout. Git's own failure is shown as is and nothing is seeded; with no
+built checkout to copy from the worktree is still added and the tool says there was nothing to
+seed. `--dry-run` still adds the worktree and only reports what seeding would copy. Only the
+dependencies whose sources stay where they are — registry crates, a vendor dir outside the
+repository — build warm; the workspace itself moved and is compiled again.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -141,9 +151,10 @@ changed — and everything else is reused.
 A new worktree that builds warm:
 
 ```
-git worktree add ../feature-x feature-x
-dunnage seed ../feature-x
+dunnage worktree add ../feature-x -b feature-x
 ```
+
+or, for a worktree that is already there, `dunnage seed ../feature-x`.
 
 Reclaim the worktrees an agent or a script left behind — look first, then delete:
 

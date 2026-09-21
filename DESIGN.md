@@ -362,9 +362,16 @@ Not a pass: it runs on its own, before there is anything to shrink.
 
 Known limits: the yield depends on what moved — units whose absolute path is part of their
 fingerprint (workspace members, path dependencies) are compiled again in the new checkout, and
-the test suite measures this against an empty target instead of assuming it; the fixture has no
-registry dependencies, which are exactly the units that keep their paths across worktrees, so
-the measured win is a floor; `--from` is not checked for being in the same family.
+the test suite measures this against an empty target instead of assuming it; the shared fixture
+has no registry dependencies, which are exactly the units that keep their paths across
+worktrees, so `tests/worktree.rs` builds a repository whose one dependency is vendored outside
+it; `--from` is not checked for being in the same family.
+
+`dunnage worktree add GIT ARGS...` (`Session::worktree_add`) is `git worktree add` followed by
+`seed`: it finds the new worktree by comparing `git worktree list --porcelain` before and after,
+seeds it at the path the current dir has inside its checkout, and reports git's failure without
+seeding. No built checkout to copy from is not an error: the worktree stays and nothing is
+copied.
 
 ## Orphans pass (`src/orphans.rs`)
 
@@ -589,6 +596,7 @@ dunnage run [--dry-run] [--lossy <PASS>]... [--index <FILE>] [<ROOT>]...
                                                     # --lossy orphans: no threshold
                [--pass <PASS>]... [--min-age <SECS>] [--min-size <BYTES>]  # benchmarks
 dunnage seed [--from <DIR>] [--dry-run] [--index <FILE>] [<DIR>]  # clone a sibling's target
+dunnage worktree add [--dry-run] [--index <FILE>] <GIT ARGS>... # git worktree add, then seed
 dunnage advise [--json] [ROOT]...  # what makes these targets bigger than they need to be
 ```
 
