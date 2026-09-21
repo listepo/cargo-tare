@@ -2,10 +2,10 @@
 //! for a while. Cargo keeps it only for workspace members, so what it costs to drop is one
 //! non-incremental rebuild of the crates you wrote — and only in a profile you are not using.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::engine::{Action, Pass};
-use crate::inventory::{self, ProfileInfo};
+use crate::inventory::ProfileInfo;
 use crate::model::Profile;
 
 pub const NAME: &str = "incremental";
@@ -64,12 +64,16 @@ impl Pass for Incremental {
     }
 
     fn plan(&self, profiles: &[Profile]) -> Vec<Action> {
-        let locked = |dir: &Path| profiles.iter().any(|profile| profile.dir == *dir);
+        // Now that the lock is ours: a build that ran after the inventory keeps its cache.
+        let unbuilt = |info: &ProfileInfo| {
+            profiles
+                .iter()
+                .find(|profile| profile.dir == info.dir)
+                .is_some_and(|profile| profile.last_used == info.last_built_unix)
+        };
         self.chosen
             .iter()
-            .filter(|idle| locked(&idle.profile.dir) && idle.dir().is_dir())
-            // Now that the lock is ours: a build that ran after the inventory keeps its cache.
-            .filter(|idle| inventory::last_built(&idle.profile.dir) == idle.profile.last_built_unix)
+            .filter(|idle| unbuilt(&idle.profile) && idle.dir().is_dir())
             .map(|idle| Action::Remove {
                 dir: idle.dir(),
                 reason: format!(
@@ -85,6 +89,7 @@ impl Pass for Incremental {
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::Path;
     use tempfile::TempDir;
 
     const NOW: u64 = 1_000 * SECS_PER_DAY;

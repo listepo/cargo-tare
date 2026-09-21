@@ -2,7 +2,7 @@
 //! [`Request`], call a [`Session`] and show what it returns; everything the tool *does* happens
 //! here. The session never prints, never exits and never reads the environment or a config file
 //! on its own: [`Settings`] carries the paths, and the helpers that resolve them from the
-//! environment ([`default_index`], [`crate::config::default_path`], [`crate::cargo_home::path`])
+//! environment ([`default_index`], [`crate::config::default_path`], [`crate::eco::cargo::home::path`])
 //! are functions a front end calls.
 //!
 //! Two sessions that change anything — `plan`, `apply` and `seed` — are kept apart by the run
@@ -18,16 +18,17 @@ use std::process::Command;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::advise::{self, Finding, Kind, Note};
-use crate::cargo_home;
 use crate::compress::{self, Compress};
 use crate::config::Config;
 use crate::dedupe::{self, Dedupe};
-use crate::doc::{self, Doc, Docs};
-use crate::engine::{self, Interrupt, Interrupted, Locks, Options, Pass, Report};
+use crate::eco::cargo::advise::{self, Finding, Kind, Note};
+use crate::eco::cargo::doc::{self, Doc, Docs};
+use crate::eco::cargo::home::{self as cargo_home, Home};
+use crate::eco::cargo::incremental::{self, Incremental};
+use crate::eco::{self, Ecosystem, cargo::CARGO};
+use crate::engine::{self, Interrupt, Interrupted, Options, Pass, Report};
 use crate::error::{Error, Result};
 use crate::evict::{self, Evict, Limits};
-use crate::incremental::{self, Incremental};
 use crate::index::HashIndex;
 use crate::inventory::{self, Inventory, ProfileInfo};
 use crate::orphans::{self, Orphan, Orphans};
@@ -310,7 +311,7 @@ impl Session {
         let mut advice = Advice::default();
         let mut read = Vec::new();
         for target in &inventory.targets {
-            let Some(project) = target.root.parent() else {
+            let Some(project) = target.project.as_deref() else {
                 continue;
             };
             let files = [
@@ -347,15 +348,19 @@ impl Session {
     /// Fill the empty target of `checkout` from `from` (a checkout or a target dir), or from the
     /// family's most recently built target.
     pub fn seed(&self, checkout: &Path, from: Option<&Path>, dry_run: bool) -> Result<Seeding> {
+        // The one adapter so far; seeding every position of a monorepo checkout is T37.
+        let eco: &dyn Ecosystem = &CARGO;
         let checkout = canonical(checkout)?;
         let source = match from {
             Some(path) => {
                 let path = canonical(path)?;
                 // A checkout or its target dir; both are what somebody means by "from there".
-                let target = path.join(seed::TARGET);
-                if target.is_dir() { target } else { path }
+                match eco.build_dir(&path) {
+                    Some(target) if target.is_dir() => target,
+                    _ => path,
+                }
             }
-            None => seed::choose(&checkout).ok_or_else(|| {
+            None => seed::choose(&checkout, eco).ok_or_else(|| {
                 Error::Invalid(
                     "no other checkout of this repository has a target dir; name one with --from"
                         .into(),
@@ -364,14 +369,15 @@ impl Session {
         };
         let _lock = self.lock()?;
         let mut hashes = HashIndex::load(&self.settings.index);
-        let seeded = seed::seed(&checkout, &source, &mut hashes, dry_run).map_err(Error::at(
-            format_args!("seeding {} from {}", checkout.display(), source.display()),
-        ))?;
+        let seeded =
+            seed::seed(&checkout, &source, eco, &mut hashes, dry_run).map_err(Error::at(
+                format_args!("seeding {} from {}", checkout.display(), source.display()),
+            ))?;
         if !dry_run {
             self.save(&mut hashes)?;
         }
         Ok(Seeding {
-            target: checkout.join(seed::TARGET),
+            target: eco.build_dir(&checkout).unwrap_or(checkout),
             seeded,
         })
     }
@@ -403,7 +409,7 @@ impl Session {
             .find(|listed| !before.contains(listed))
             .ok_or_else(|| Error::Invalid("git worktree add added no worktree".into()))?;
         let checkout = worktree.join(inside);
-        let seeding = match seed::choose(&checkout) {
+        let seeding = match seed::choose(&checkout, &CARGO) {
             Some(source) => self.seed(&checkout, Some(&source), dry_run).map(Some),
             None => Ok(None),
         };
@@ -438,8 +444,8 @@ impl Session {
         // Artifacts are only linked when the user asks; the cargo home's unpacked sources are
         // always safe to link, because cargo replaces a source dir instead of rewriting its files.
         let mut home_dedupe = Dedupe::new(&index);
-        dedupe.link_fallback = request.link_artifacts;
-        home_dedupe.link_fallback = true;
+        dedupe.link_fallback = CARGO.policy().share.links(request.link_artifacts);
+        home_dedupe.link_fallback = Home::POLICY.share.links(request.link_artifacts);
         if let Some(min_age) = request.min_age {
             (compress.min_age, dedupe.min_age) = (min_age, min_age);
             home_dedupe.min_age = min_age;
@@ -468,9 +474,12 @@ impl Session {
                 .targets
                 .iter()
                 .filter(|target| target.orphaned)
-                .map(|target| Orphan {
-                    target: target.root.clone(),
-                    allocated_bytes: target.allocated_bytes,
+                .filter_map(|target| {
+                    Some(Orphan {
+                        target: target.root.clone(),
+                        project: target.project.clone()?,
+                        allocated_bytes: target.allocated_bytes,
+                    })
                 })
                 .collect(),
         );
@@ -497,8 +506,14 @@ impl Session {
         // One group per family keeps a run's locks inside the repository it is working on. Across
         // families every target is compared with every other — unrelated projects do share
         // artifacts — and the price is that the locks of all of them are held for the whole run.
-        let mut groups: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
+        // A group is also one adapter's, whose guards the engine takes.
+        type Group = (&'static dyn Ecosystem, Vec<PathBuf>);
+        let mut groups: BTreeMap<(PathBuf, &'static str), Group> = BTreeMap::new();
         for target in inventory.targets {
+            // Every inventoried dir was claimed by a registered adapter.
+            let Some(eco) = eco::named(target.ecosystem) else {
+                continue;
+            };
             let family = target.family.unwrap_or_else(|| target.root.clone());
             if request.skip_families.contains(&family) {
                 continue;
@@ -510,7 +525,11 @@ impl Session {
                 family
             };
             let dirs = target.profiles.into_iter().map(|profile| profile.dir);
-            groups.entry(key).or_default().extend(dirs);
+            groups
+                .entry((key, eco.name()))
+                .or_insert_with(|| (eco, Vec::new()))
+                .1
+                .extend(dirs);
         }
 
         let mut report = RunReport {
@@ -518,7 +537,7 @@ impl Session {
             ..RunReport::default()
         };
         let mut again = Vec::new();
-        for (group, profile_dirs) in &groups {
+        for ((group, _), (eco, profile_dirs)) in &groups {
             if control.stopped() {
                 break;
             }
@@ -527,15 +546,15 @@ impl Session {
                 profile_dirs,
                 &passes,
                 &opts,
-                Locks::PerDir,
+                *eco,
                 control,
                 &mut report,
             )?;
             if done == Some(Interrupted::OutOfBudget) {
-                again.push((group, profile_dirs));
+                again.push((group, *eco, profile_dirs));
             }
         }
-        for (group, profile_dirs) in again {
+        for (group, eco, profile_dirs) in again {
             if control.stopped() {
                 break;
             }
@@ -544,7 +563,7 @@ impl Session {
                 profile_dirs,
                 &passes,
                 &opts,
-                Locks::PerDir,
+                eco,
                 control,
                 &mut report,
             )?;
@@ -583,12 +602,15 @@ impl Session {
                         .then_some(&home_dedupe as &dyn Pass),
                 )
                 .collect();
+            let adapter = Home {
+                home: home.to_path_buf(),
+            };
             let done = visit(
                 home,
                 &dirs,
                 &home_passes,
                 &opts,
-                Locks::Shared(&lock),
+                &adapter,
                 control,
                 &mut report,
             )?;
@@ -676,12 +698,12 @@ fn visit(
     dirs: &[PathBuf],
     passes: &[&dyn Pass],
     opts: &Options,
-    locks: Locks<'_>,
+    eco: &dyn Ecosystem,
     control: &Control,
     report: &mut RunReport,
 ) -> Result<Option<Interrupted>> {
     control.observer.group(group);
-    let done = engine::run_with(dirs, passes, opts, locks, control.interrupt())?;
+    let done = engine::run_with(dirs, passes, opts, eco, control.interrupt())?;
     control.observer.report(group, &done);
     report.left_busy |= !done.busy.is_empty();
     let interrupted = done.interrupted;

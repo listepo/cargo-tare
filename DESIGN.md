@@ -203,8 +203,34 @@ any stamp differs from the scan (`Changed`), or an I/O call fails (`Failed`). A 
 middle of a group leaves each path on the old or the new inode; both hold the same bytes, and the
 next run joins them again.
 
-`model::profile_dirs` maps a target dir to its profile dirs and refuses a dir whose
+`eco::cargo::profile_dirs` maps a target dir to its profile dirs and refuses a dir whose
 `CACHEDIR.TAG` was not written by cargo.
+
+## Adapter boundary (`src/eco/`)
+
+Everything that knows a build system by name is under `src/eco/`, the way everything that
+knows a platform is under `src/sys/`. The engine, the inode model, the index, `seed` and the
+generic passes ask through `eco::Ecosystem`: `claim` (is this dir a build dir), `owner` (the
+project it was built from), `build_dir` (where a project's build goes, for `seed`), `units`,
+`guard`, `private` (never scanned, never copied: `.cargo-lock`), `volatile` (left behind by
+`seed`: `incremental/`), `last_used` and `policy` (how dedupe may share). `eco::discover` is the
+one walk: every dir is offered to the registry in order, the first claim wins, a claimed dir is
+not entered and `.git` is never entered — so a CMake dir or a whole cargo target that a build
+script left inside a target is nobody's.
+
+The engine takes the adapter instead of a lock kind and locks what `guard` names:
+`Guard::Lock(file)` per unit, `Guard::Shared(file)` once for every unit under it. `Held`
+(an embedding caller holds the build's lock, R8), `Quiet` (T29) and `Immutable` (T33) are in the
+enum and refused until their tasks. `model::scan` records the unit's `last_used` at scan time, so
+`evict` and `incremental` re-check a unit's last build under its lock without asking cargo.
+Family and orphan status come from the owner's project, not from the build dir's parents; for
+cargo the owner is the dir above the target, so nothing changed.
+
+`eco::cargo::Cargo` is the only registered adapter; `eco::cargo::home::Home` is the cargo home,
+never discovered, named by a run, guarded by `Guard::Shared(.package-cache)`. Cargo's own passes
+and reports (`incremental`, `doc`, `toolchains`, `advise`, the home's stats) live under
+`src/eco/cargo/` too; the session still wires them by name, and the inventory still carries
+their cargo-shaped fields, until the status report is per ecosystem.
 
 After a group is replaced the engine calls `Pass::replaced(replace, new_stamp)`, so a pass can
 keep its own bookkeeping about the inode that now sits at the member's paths.
@@ -356,7 +382,7 @@ Not a pass: it runs on its own, before there is anything to shrink.
   recreated as symlinks, and `incremental/`, `.cargo-lock` and leftover `.dunnage-tmp-` files are
   left behind: a cache of another checkout's build, a lock that is not ours, and rubbish.
 - **Under the source's locks.** Every profile dir of the source is locked with
-  `ProfileLock::try_acquire` for the length of the walk; one that a build holds is reported and
+  `ProfileLock::try_guard` on the adapter's guard for the length of the walk; one that a build holds is reported and
   skipped whole, so nothing half-written is ever copied. Exit code 2, as in `run`.
 - **Never into a live target.** A destination that already has a target dir is refused: seeding
   merges nothing.
@@ -441,7 +467,7 @@ against sizes from the inventory, taken before compress and dedupe shrink the re
 dir that disappears between the inventory and the lock (a concurrent `cargo clean`) fails the
 run with the I/O error instead of being skipped. Thresholds are flags until the config (T10).
 
-## Incremental pass (`src/incremental.rs`)
+## Incremental pass (`src/eco/cargo/incremental.rs`)
 
 Lossy, so it runs only with `--lossy incremental --incremental-idle-days <N>`; the flags need
 each other, as `evict`'s do.
@@ -457,7 +483,7 @@ each other, as `evict`'s do.
 - **Selection is pure**, except for one `is_dir` check: a profile with no cache is never planned.
   A profile whose last build is unknown is never chosen, as in `evict`.
 - **Re-checked under the lock**: the cache goes only if the engine holds that profile's lock and
-  `inventory::last_built` still equals the inventory's reading. A build in between keeps it.
+  its last build, read under the lock, still equals the inventory's reading. A build in between keeps it.
 - **The engine removes, not the pass.** `Action::Remove` accepts a locked profile dir *or a dir
   inside one*, which is what makes this pass one selector instead of a second removal path.
   The profile dir itself stays, so its lock stays valid for the passes that follow.
@@ -491,7 +517,7 @@ Read-only: takes no locks and changes nothing, so it is safe next to running bui
 runs alone), so locks are held only in targets that are compared with each other. Known limit:
 equal files in unrelated projects are not shared.
 
-## Advise command (`src/advise.rs`)
+## Advise command (`src/eco/cargo/advise.rs`)
 
 Read-only, and the only command that reads anything outside a target dir. Two lists:
 
@@ -517,7 +543,7 @@ Out of scope on purpose: `cargo-hakari` and `sccache` help with rebuild time, no
 of a live target, and nothing in a file says whether a workspace wants them — they stay in
 `docs/research.md` rather than in the output.
 
-## Doc pass (`src/doc.rs`)
+## Doc pass (`src/eco/cargo/doc.rs`)
 
 Lossy, so it runs only with `--lossy doc`, and the smallest pass there is: `<target>/doc` is what
 `cargo doc` writes from scratch and no build reads, which is why `cargo clean --doc` exists.
@@ -546,7 +572,7 @@ a minute of no builds anywhere. That is why it is opt-in and stays opt-in.
 
 Per-family `skip` still applies, because it is decided before the grouping.
 
-## Toolchain report (`src/toolchains.rs`)
+## Toolchain report (`src/eco/cargo/toolchains.rs`)
 
 A toolchain upgrade does not clean up after itself: cargo compiles every unit again under new
 hashes and never looks at what the old rustc produced. `cargo-sweep --installed` finds those by
@@ -564,7 +590,7 @@ This is why the task stops at a report: nothing can be deleted safely without th
 `status` prints a line per target and `advise` adds a note pointing at `cargo clean`. A target
 built by one rustc — the ordinary case — reports nothing at all.
 
-## Cargo home (`src/cargo_home.rs`)
+## Cargo home (`src/eco/cargo/home.rs`)
 
 The registry sources are the one big pile of compressible text outside the targets: every crate
 cargo builds is unpacked there once and then only read. `--cargo-home` treats it as one more
@@ -576,7 +602,7 @@ group, with two differences from a target.
   the archives are already compressed, and the index is cargo's own cache to invalidate.
 - **One lock for the whole group, not one per dir.** Cargo does not write `.cargo-lock` files
   there; what it holds while it fetches or extracts is `<home>/.package-cache`. So
-  `engine::run(..., Locks::Shared(&lock))` takes that one file lock and either all the dirs are
+  the `Home` adapter's `Guard::Shared` makes the engine take that one file lock and either all the dirs are
   ours or none are, which is also why a home cargo has never used (no `.package-cache`) is refused
   rather than locked into existence.
 

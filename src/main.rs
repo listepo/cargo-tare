@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
-use dunnage::cargo_home;
 use dunnage::config::{self, Config};
+use dunnage::eco::cargo::home as cargo_home;
 use dunnage::engine;
 use dunnage::inventory::{Inventory, Target};
 use dunnage::session::{self, Control, Observer, Request, RunReport, Session, Settings};

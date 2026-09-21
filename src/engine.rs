@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
-use crate::model::{self, CARGO_LOCK_FILE, Inode, Profile, Stamp, TMP_PREFIX};
+use crate::eco::{Ecosystem, Guard};
+use crate::model::{self, Inode, Profile, Stamp, TMP_PREFIX};
 use crate::sys::{self, COMPRESSED};
 
 /// Copies handed to [`Pass::compress`] at once: bounds the work a crash throws away and the
@@ -243,20 +244,25 @@ fn remove(
     }
 }
 
-/// Cargo's own per-profile lock, held exclusively until dropped.
+/// The build's own lock on a unit, held exclusively until dropped.
 pub struct ProfileLock {
     _file: File,
 }
 
 impl ProfileLock {
-    /// `None` when a build holds the lock. A missing lock file is an error: not a profile dir.
-    pub fn try_acquire(profile_dir: &Path) -> io::Result<Option<Self>> {
-        Self::try_lock_file(&profile_dir.join(CARGO_LOCK_FILE))
+    /// The lock `guard` names. `None` when a build holds it. A missing lock file is an error:
+    /// not a unit. The guards without a lock file are not implemented and refused.
+    pub fn try_guard(guard: &Guard) -> io::Result<Option<Self>> {
+        match guard {
+            Guard::Lock(file) | Guard::Shared(file) => Self::try_lock_file(file),
+            Guard::Held | Guard::Quiet | Guard::Immutable => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("{guard:?} is not implemented"),
+            )),
+        }
     }
 
-    /// The same, for a lock file named directly — `$CARGO_HOME/.package-cache`, which cargo
-    /// holds for every dir of the cargo home at once.
-    pub fn try_lock_file(file: &Path) -> io::Result<Option<Self>> {
+    fn try_lock_file(file: &Path) -> io::Result<Option<Self>> {
         let file = File::options().read(true).write(true).open(file)?;
         match file.try_lock() {
             Ok(()) => Ok(Some(Self { _file: file })),
@@ -266,24 +272,16 @@ impl ProfileLock {
     }
 }
 
-/// Which lock guards the dirs of a run.
-#[derive(Clone, Copy, Debug)]
-pub enum Locks<'a> {
-    /// Cargo's per-profile lock: each dir carries its own `.cargo-lock`, and a dir whose lock a
-    /// build holds is left out of the run.
-    PerDir,
-    /// One lock file for every dir at once, the way cargo guards its home with
-    /// `.package-cache`. Held: every dir is worked on. Busy: none of them is.
-    Shared(&'a Path),
-}
-
+/// Every pass over `profile_dirs`, the units of `eco`, each under the guard `eco` names for it.
+/// A unit whose guard a build holds is left out of the run; units under one shared guard are
+/// all in or all out.
 pub fn run(
     profile_dirs: &[PathBuf],
     passes: &[&dyn Pass],
     opts: &Options,
-    locks_of: Locks<'_>,
+    eco: &dyn Ecosystem,
 ) -> io::Result<Report> {
-    run_with(profile_dirs, passes, opts, locks_of, Interrupt::default())
+    run_with(profile_dirs, passes, opts, eco, Interrupt::default())
 }
 
 /// [`run`], letting go early when `interrupt` says so.
@@ -291,7 +289,7 @@ pub fn run_with(
     profile_dirs: &[PathBuf],
     passes: &[&dyn Pass],
     opts: &Options,
-    locks_of: Locks<'_>,
+    eco: &dyn Ecosystem,
     interrupt: Interrupt<'_>,
 ) -> io::Result<Report> {
     // Sorted order, so two concurrent runs cannot take the same locks in opposite order.
@@ -302,28 +300,37 @@ pub fn run_with(
     let mut report = Report::default();
     let mut locks = Vec::new();
     let mut locked = Vec::new();
-    match locks_of {
-        Locks::PerDir => {
-            for dir in dirs {
-                match ProfileLock::try_acquire(&dir)? {
-                    Some(lock) => {
-                        locks.push(lock);
-                        locked.push(dir);
-                    }
-                    None => report.busy.push(dir),
+    // A shared guard is tried once, in the order its first unit comes.
+    let mut shared: Vec<(Guard, bool)> = Vec::new();
+    for dir in dirs {
+        let guard = eco.guard(&dir);
+        let held = match &guard {
+            Guard::Shared(_) => match shared.iter().find(|(seen, _)| *seen == guard) {
+                Some(&(_, held)) => held,
+                None => {
+                    let lock = ProfileLock::try_guard(&guard)?;
+                    let held = lock.is_some();
+                    locks.extend(lock);
+                    shared.push((guard, held));
+                    held
                 }
-            }
+            },
+            _ => match ProfileLock::try_guard(&guard)? {
+                Some(lock) => {
+                    locks.push(lock);
+                    true
+                }
+                None => false,
+            },
+        };
+        if held {
+            locked.push(dir);
+        } else {
+            report.busy.push(dir);
         }
-        Locks::Shared(file) => match ProfileLock::try_lock_file(file)? {
-            Some(lock) => {
-                locks.push(lock);
-                locked = dirs;
-            }
-            None => report.busy = dirs,
-        },
     }
 
-    let mut profiles = scan_all(&locked)?;
+    let mut profiles = scan_all(&locked, eco)?;
     if !opts.dry_run {
         for temp in profiles.iter().flat_map(|p| &p.stale_temps) {
             fs::remove_file(temp)?;
@@ -421,7 +428,7 @@ pub fn run_with(
             if pass_report.applied > 0 || removal_tried {
                 // ponytail: full rescan so the next pass sees the new inodes; patch the model in
                 // place if scan time ever shows up in the benchmarks.
-                profiles = scan_all(&locked)?;
+                profiles = scan_all(&locked, eco)?;
             }
             progressed |= pass_report.applied > 0;
             round.push(pass_report);
@@ -442,8 +449,8 @@ pub fn run_with(
     Ok(report)
 }
 
-fn scan_all(dirs: &[PathBuf]) -> io::Result<Vec<Profile>> {
-    dirs.iter().map(|dir| model::scan(dir)).collect()
+fn scan_all(dirs: &[PathBuf], eco: &dyn Ecosystem) -> io::Result<Vec<Profile>> {
+    dirs.iter().map(|dir| model::scan(dir, eco)).collect()
 }
 
 fn apply_replace(replace: &Replace, locked: &[PathBuf]) -> Option<Skip> {

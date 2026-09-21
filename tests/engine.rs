@@ -8,11 +8,13 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
+use dunnage::eco::cargo;
+use dunnage::eco::cargo::{CARGO, LOCK_FILE};
 use dunnage::engine::{
-    self, Action, Interrupt, Interrupted, Locks, Options, Pass, Replace, Report, Share, Skip,
+    self, Action, Interrupt, Interrupted, Options, Pass, Replace, Report, Share, Skip,
 };
 use dunnage::model::Stamp;
-use dunnage::model::{self, CARGO_LOCK_FILE, Profile, TMP_PREFIX};
+use dunnage::model::{self, Profile, TMP_PREFIX};
 use tempfile::TempDir;
 
 mod common;
@@ -64,7 +66,7 @@ fn share_by_name(profiles: &[Profile], source: &str, member: &str, how: Share) -
 }
 
 fn run(profile: &Path, passes: &[&dyn Pass], opts: &Options) -> Report {
-    run_unbusy(|| engine::run(&[profile.to_path_buf()], passes, opts, Locks::PerDir).unwrap())
+    run_unbusy(|| engine::run(&[profile.to_path_buf()], passes, opts, &CARGO).unwrap())
 }
 
 fn run_replace(profile: &Path, opts: &Options) -> Report {
@@ -80,7 +82,7 @@ fn profile() -> (TempDir, PathBuf) {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path().canonicalize().unwrap().join("debug");
     fs::create_dir_all(dir.join("deps")).unwrap();
-    File::create(dir.join(CARGO_LOCK_FILE)).unwrap();
+    File::create(dir.join(LOCK_FILE)).unwrap();
     fs::write(dir.join("canon"), CONTENT).unwrap();
     let member = dir.join("deps/member");
     fs::write(&member, CONTENT).unwrap();
@@ -120,7 +122,7 @@ fn replaces_whole_hardlink_group_and_keeps_mtime_and_mode() {
     assert_eq!(meta.modified().unwrap(), SystemTime::UNIX_EPOCH + OLD_MTIME);
     assert_eq!(meta.mode() & 0o7777, MEMBER_MODE);
     assert_eq!(fs::read(&member).unwrap(), CONTENT);
-    assert!(model::scan(&dir).unwrap().stale_temps.is_empty());
+    assert!(model::scan(&dir, &CARGO).unwrap().stale_temps.is_empty());
 }
 
 /// The link fallback (`T22`), which is the only way to share on a filesystem without
@@ -159,7 +161,7 @@ fn a_link_puts_the_group_on_one_inode_and_keeps_the_later_mtime() {
         newer,
         "the shared inode keeps the later time, for both names"
     );
-    assert!(model::scan(&dir).unwrap().stale_temps.is_empty());
+    assert!(model::scan(&dir, &CARGO).unwrap().stale_temps.is_empty());
 }
 
 /// Modes are not negotiable: the fixture's member is `0o640` and `canon` is not, and one inode
@@ -187,7 +189,7 @@ fn busy_profile_is_skipped_untouched() {
     let (_tmp, dir) = profile();
     let stale = dir.join(format!("{TMP_PREFIX}crashed"));
     fs::write(&stale, b"x").unwrap();
-    let held = File::open(dir.join(CARGO_LOCK_FILE)).unwrap();
+    let held = File::open(dir.join(LOCK_FILE)).unwrap();
     held.lock().unwrap();
     let old_ino = ino(&dir.join("deps/member"));
 
@@ -332,7 +334,7 @@ fn scan_does_not_follow_symlinks() {
     symlink(&outside, dir.join("link-dir")).unwrap();
     symlink(outside.join("secret"), dir.join("link-file")).unwrap();
 
-    let scan = model::scan(&dir).unwrap();
+    let scan = model::scan(&dir, &CARGO).unwrap();
 
     let names: Vec<_> = scan
         .inodes
@@ -347,15 +349,15 @@ fn scan_does_not_follow_symlinks() {
 fn profile_dirs_refuses_a_dir_cargo_did_not_tag() {
     let (_tmp, dir) = profile();
     let target = dir.parent().unwrap();
-    assert!(model::profile_dirs(target).is_err(), "no tag at all");
+    assert!(cargo::profile_dirs(target).is_err(), "no tag at all");
     fs::write(
         target.join("CACHEDIR.TAG"),
         "Signature: 8a477f597d28d172789f06886806bc55",
     )
     .unwrap();
-    assert!(model::profile_dirs(target).is_err(), "someone else's tag");
+    assert!(cargo::profile_dirs(target).is_err(), "someone else's tag");
     fs::write(target.join("CACHEDIR.TAG"), "# tag created by cargo.").unwrap();
-    assert_eq!(model::profile_dirs(target).unwrap(), [dir.as_path()]);
+    assert_eq!(cargo::profile_dirs(target).unwrap(), [dir.as_path()]);
 }
 
 // --- a real cargo build ---
@@ -387,7 +389,7 @@ fn running_build_is_not_disturbed_and_replaced_artifacts_stay_fresh() {
             std::slice::from_ref(&profile),
             &[],
             &Options::default(),
-            Locks::PerDir,
+            &CARGO,
         ) {
             seen_busy = !report.busy.is_empty();
         }
@@ -396,7 +398,7 @@ fn running_build_is_not_disturbed_and_replaced_artifacts_stay_fresh() {
     assert!(build.wait().unwrap().success());
     assert!(seen_busy, "never saw cargo holding the lock");
     // Cargo's real tag and lock file are what `profile_dirs` expects.
-    assert_eq!(model::profile_dirs(&target).unwrap(), [profile.as_path()]);
+    assert_eq!(cargo::profile_dirs(&target).unwrap(), [profile.as_path()]);
     fixture.build(&target);
 
     // Freshness: replace the final binary's hardlink group (`fx` and `deps/fx-<hash>`).
@@ -450,7 +452,7 @@ fn a_stop_raised_mid_run_leaves_every_file_old_or_new() {
             std::slice::from_ref(&dir),
             &[&pass],
             &Options::default(),
-            Locks::PerDir,
+            &CARGO,
             interrupt,
         )
         .unwrap()
@@ -512,7 +514,7 @@ fn three_equal_files() -> (TempDir, PathBuf) {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path().canonicalize().unwrap().join("debug");
     fs::create_dir_all(&dir).unwrap();
-    File::create(dir.join(CARGO_LOCK_FILE)).unwrap();
+    File::create(dir.join(LOCK_FILE)).unwrap();
     for name in ["canon", "member", "second"] {
         fs::write(dir.join(name), CONTENT).unwrap();
     }

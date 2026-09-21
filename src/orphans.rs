@@ -15,6 +15,8 @@ const REASON: &str = "git no longer has a worktree record for this checkout";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Orphan {
     pub target: PathBuf,
+    /// The project the target was built from: the one whose worktree record is gone.
+    pub project: PathBuf,
     /// What `du` reports for the whole target dir, for the report.
     pub allocated_bytes: u64,
 }
@@ -48,7 +50,7 @@ impl Pass for Orphans {
             .iter()
             // The engine holds a lock inside the target, and git still says the record is gone:
             // a worktree re-registered since the inventory keeps everything it built.
-            .filter(|orphan| inside(&orphan.target) && inventory::is_orphaned(&orphan.target))
+            .filter(|orphan| inside(&orphan.target) && inventory::is_orphaned(&orphan.project))
             .map(|orphan| Action::RemoveTarget {
                 target: orphan.target.clone(),
                 dir: orphan.target.clone(),

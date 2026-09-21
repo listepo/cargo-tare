@@ -10,8 +10,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
+use dunnage::eco::cargo::{CARGO, LOCK_FILE};
 use dunnage::engine::Report;
-use dunnage::model::{self, CARGO_LOCK_FILE};
+use dunnage::model;
 use tempfile::TempDir;
 
 const CARGO_TAG: &str = "Signature: 8a477f597d28d172789f06886806bc55\n\
@@ -207,7 +208,7 @@ pub fn dunnage(config_home: &Path) -> assert_cmd::Command {
 
 /// Bytes on disk under `dir`, every hardlinked inode once.
 pub fn allocated_bytes(dir: &Path) -> u64 {
-    let inodes = model::scan(dir).unwrap().inodes;
+    let inodes = model::scan(dir, &CARGO).unwrap().inodes;
     inodes.iter().map(|inode| inode.allocated).sum()
 }
 
@@ -254,7 +255,7 @@ pub fn fake_target(root: &Path, name: &str, kib: usize, days: u64) -> PathBuf {
 pub fn fake_profile(target: &Path, name: &str, kib: usize, days: u64) -> PathBuf {
     let profile = target.join(name);
     fs::create_dir_all(profile.join("deps")).unwrap();
-    File::create(profile.join(CARGO_LOCK_FILE)).unwrap();
+    File::create(profile.join(LOCK_FILE)).unwrap();
     fs::write(profile.join("deps/libx.rlib"), vec![1; kib * KIB]).unwrap();
     let built = SystemTime::now() - Duration::from_secs(days * SECS_PER_DAY);
     for entry in fs::read_dir(&profile).unwrap() {
@@ -262,4 +263,22 @@ pub fn fake_profile(target: &Path, name: &str, kib: usize, days: u64) -> PathBuf
         entry.set_modified(built).unwrap();
     }
     profile
+}
+
+/// `git <args>` in `dir`, with an identity of its own so no user config is needed; must succeed.
+pub fn git(dir: &Path, args: &[&str]) {
+    let status = Command::new("git")
+        .current_dir(dir)
+        .args([
+            "-c",
+            "user.name=dunnage",
+            "-c",
+            "user.email=dunnage@invalid",
+        ])
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?}");
 }

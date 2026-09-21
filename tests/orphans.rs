@@ -5,9 +5,9 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Command as Process, Stdio};
 
-use dunnage::engine::{self, Locks, Options, Pass, Report};
+use dunnage::eco::cargo::{CARGO, LOCK_FILE};
+use dunnage::engine::{self, Options, Pass, Report};
 use dunnage::inventory;
-use dunnage::model::CARGO_LOCK_FILE;
 use dunnage::orphans::{self, Orphan, Orphans};
 use predicates::str::contains;
 use tempfile::TempDir;
@@ -87,7 +87,7 @@ fn run(root: &Path, opts: &Options) -> Report {
             &profile_dirs(&inventory),
             &[&chosen(&inventory)],
             opts,
-            Locks::PerDir,
+            &CARGO,
         )
         .unwrap()
     })
@@ -101,6 +101,7 @@ fn chosen(inventory: &inventory::Inventory) -> Orphans {
             .filter(|target| target.orphaned)
             .map(|target| Orphan {
                 target: target.root.clone(),
+                project: target.project.clone().unwrap(),
                 allocated_bytes: target.allocated_bytes,
             })
             .collect(),
@@ -159,7 +160,7 @@ fn a_target_with_a_running_build_is_not_touched() {
     // What cargo holds for the length of a build.
     let build = File::options()
         .write(true)
-        .open(wt.join(CARGO_LOCK_FILE))
+        .open(wt.join(LOCK_FILE))
         .unwrap();
     build.lock().unwrap();
 
@@ -183,7 +184,7 @@ fn a_worktree_registered_again_after_the_inventory_is_kept() {
     // `git worktree repair` runs between the inventory and our lock.
     fs::rename(root.join("record-stash"), record(&root)).unwrap();
     let dirs = profile_dirs(&inventory);
-    let report = run_unbusy(|| engine::run(&dirs, &[&pass], &named(), Locks::PerDir).unwrap());
+    let report = run_unbusy(|| engine::run(&dirs, &[&pass], &named(), &CARGO).unwrap());
 
     assert_eq!(report.passes[0].planned, 0, "{report:?}");
     assert!(wt.join("deps/libx.rlib").exists());

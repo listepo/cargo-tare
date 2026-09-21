@@ -2,32 +2,15 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use predicates::str::contains;
 use tempfile::TempDir;
 
 mod common;
-use common::{dunnage, stale_units_at};
+use common::{dunnage, git, stale_units_at};
 
 const EXIT_FAILURE: i32 = 1;
-
-fn git(dir: &Path, args: &[&str]) {
-    let status = Command::new("git")
-        .current_dir(dir)
-        .args([
-            "-c",
-            "user.name=dunnage",
-            "-c",
-            "user.email=dunnage@invalid",
-        ])
-        .args(args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .unwrap();
-    assert!(status.success(), "git {args:?}");
-}
 
 /// A workspace with one third-party dependency, committed as a repository and built once in
 /// place. The dependency is a vendored directory source *outside* the repository, the way

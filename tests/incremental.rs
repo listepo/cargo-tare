@@ -5,10 +5,10 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use dunnage::engine::{self, Locks, Options, Report};
-use dunnage::incremental::{self, Incremental};
+use dunnage::eco::cargo::incremental::{self, Incremental};
+use dunnage::eco::cargo::{CARGO, LOCK_FILE};
+use dunnage::engine::{self, Options, Report};
 use dunnage::inventory;
-use dunnage::model::CARGO_LOCK_FILE;
 use predicates::str::contains;
 use tempfile::TempDir;
 
@@ -59,7 +59,7 @@ fn run(root: &Path, idle_days: u64, opts: &Options) -> Report {
             .collect();
         let dirs: Vec<PathBuf> = profiles.iter().map(|profile| profile.dir.clone()).collect();
         let pass = Incremental::new(incremental::select(&profiles, now_unix(), idle_days));
-        engine::run(&dirs, &[&pass], opts, Locks::PerDir).unwrap()
+        engine::run(&dirs, &[&pass], opts, &CARGO).unwrap()
     })
 }
 
@@ -82,7 +82,7 @@ fn an_idle_cache_goes_and_the_rest_of_the_profile_stays() {
     assert!(!idle.join("incremental").exists());
     // Only the cache: the artifacts, the lock file and the target itself are untouched.
     assert!(idle.join("deps/libx.rlib").exists());
-    assert!(idle.join(CARGO_LOCK_FILE).exists());
+    assert!(idle.join(LOCK_FILE).exists());
     assert!(fresh.join("incremental").exists());
 }
 
@@ -123,7 +123,7 @@ fn a_profile_with_a_running_build_is_not_touched() {
     let idle = idle_target(&root, "idle", IDLE_DAYS + 1);
     let build = File::options()
         .write(true)
-        .open(idle.join(CARGO_LOCK_FILE))
+        .open(idle.join(LOCK_FILE))
         .unwrap();
     build.lock().unwrap();
 
@@ -145,13 +145,7 @@ fn a_profile_built_after_the_inventory_keeps_its_cache() {
     // A build slips in between the inventory and our lock.
     fs::write(idle.join("fresh-artifact"), b"new").unwrap();
     let report = run_unbusy(|| {
-        engine::run(
-            std::slice::from_ref(&idle),
-            &[&pass],
-            &named(),
-            Locks::PerDir,
-        )
-        .unwrap()
+        engine::run(std::slice::from_ref(&idle), &[&pass], &named(), &CARGO).unwrap()
     });
 
     assert_eq!(report.passes[0].planned, 0, "{report:?}");

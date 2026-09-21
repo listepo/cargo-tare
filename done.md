@@ -1125,3 +1125,62 @@ As planned. The CLI's config loading moved into one `load_config` helper, so `se
 #### Verified
 
 `just check` and `just check-cross` green.
+
+### T28. Adapter boundary: what is cargo and what is not
+
+`docs/ecosystems.md`, first table: the engine, the inode model, the hash index, `src/sys/` and
+the two lossless passes know nothing about cargo; discovery (`CACHEDIR.TAG`), the unit of work
+(a profile dir), the lock (`.cargo-lock`), "last built", what `seed` leaves behind and the
+cargo-only passes do. Put the second list behind one trait answering the six questions of that
+document — discover, lock, freshness-relevant volatile paths, owner, last use, and the oracle in
+tests — with cargo as its only implementation. No crate split until a second binary needs one,
+no new flag, no behavior change: the existing tests and the `--help` snapshots are the
+proof. The card of the first non-cargo adapter decides how an ecosystem is selected on the
+command line; this one only makes room for it.
+
+The shape is worked out in `docs/architecture.md`: the `Ecosystem` trait and its `Guard` /
+`Policy` answers, `src/eco/` as the twin of `src/sys/`, one shared discovery walk where the
+outermost claim wins (a CMake dir inside a cargo target is nobody else's), and family and
+position computed from the build dir's *owner* rather than from where it sits — which is what
+gives an out-of-tree `build-dir` a family at all. Part of done: the monorepo fixture described
+there, with the assertions that already hold.
+
+Sits on T36: discovery and the adapters are reached through the session, and `Guard::Held` is
+reserved in the enum for an embedding caller (R8) without being implemented.
+
+#### Execution plan
+
+1. `src/eco/mod.rs`: the `Ecosystem` trait (`name`, `claim`, `owner`, `units`, `guard`,
+   `volatile`, `last_used`, `build_dir`), `Guard` (`Held`, `Lock`, `Shared`, `Quiet`,
+   `Immutable`), `Policy` / `Sharing`, `Owner`, the registry and the one shared walk (first
+   claim wins, a claimed dir is not entered).
+2. `src/eco/cargo/`: the `Cargo` adapter built from what is in `model.rs` (`CACHEDIR.TAG`,
+   `.cargo-lock`, profile dirs), `inventory::last_built`, `seed.rs` (`target`, what is left
+   behind), plus `CargoHome` with `Guard::Shared(.package-cache)`. `incremental`, `doc`,
+   `toolchains`, `advise` and `cargo_home` move under it.
+3. The engine takes an `&dyn Ecosystem` instead of `Locks` and locks what `guard` names;
+   `model::scan` skips what `volatile` names; `seed` asks `build_dir` and `units`; inventory
+   takes family and orphan status from the owner's project instead of from the build dir's
+   parents. Same result for cargo, where the owner is the dir above the target.
+4. Tests: every existing test and `--help` snapshot unchanged in meaning; a monorepo test (one
+   repository, two workspaces at different positions, a CMake-looking dir inside a target, a
+   worktree) asserting each build dir is found once, the nested one is nobody's, and both
+   positions are one family.
+5. `DESIGN.md` and `docs/architecture.md` "Where this stands".
+
+#### Result
+
+As planned, with these differences from the sketch in `docs/architecture.md` (recorded there):
+`claim` is a yes or no, units are paths, `private` (never scanned or copied: `.cargo-lock`) and
+`volatile` (never seeded: `incremental/`) are separate questions, and `Policy` has only `share`.
+`engine::Locks` is gone: the engine takes the adapter and locks what `guard` names, a shared
+guard once for all its units. `Profile::last_used` is read at scan time, under the lock, so
+`evict` and `incremental` re-check without calling cargo code; `Orphan` carries its project.
+The walk no longer enters `.git`. Still naming cargo outside `src/eco/`: the session (cargo's
+passes and reports, the adapter `seed` uses) and the inventory's cargo-shaped status fields.
+`tests/monorepo.rs` is the monorepo fixture; the git test helper moved to `tests/common`.
+
+#### Verified
+
+`just check` and `just check-cross` green; every existing test passes unchanged in meaning (only
+call sites moved to the new API), and so does `tests/monorepo.rs`.

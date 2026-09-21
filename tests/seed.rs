@@ -4,8 +4,8 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use dunnage::eco::cargo::{CARGO, LOCK_FILE};
 use dunnage::index::HashIndex;
-use dunnage::model::CARGO_LOCK_FILE;
 use dunnage::seed;
 use predicates::str::contains;
 use tempfile::TempDir;
@@ -83,7 +83,14 @@ fn a_seeded_worktree_reuses_what_it_can() {
     let family = Family::new();
     let mut index = nowhere(&family.worktree_ws);
 
-    let seeded = seed::seed(&family.worktree_ws, &family.source(), &mut index, false).unwrap();
+    let seeded = seed::seed(
+        &family.worktree_ws,
+        &family.source(),
+        &CARGO,
+        &mut index,
+        false,
+    )
+    .unwrap();
 
     assert_eq!(seeded.source, family.source());
     assert!(seeded.files > 0, "{seeded:?}");
@@ -107,10 +114,17 @@ fn the_cache_and_the_lock_files_are_left_behind() {
     let mut index = nowhere(&family.worktree_ws);
     assert!(family.source().join("debug/incremental").is_dir());
 
-    seed::seed(&family.worktree_ws, &family.source(), &mut index, false).unwrap();
+    seed::seed(
+        &family.worktree_ws,
+        &family.source(),
+        &CARGO,
+        &mut index,
+        false,
+    )
+    .unwrap();
 
     assert!(!family.seeded().join("debug/incremental").exists());
-    assert!(!family.seeded().join("debug").join(CARGO_LOCK_FILE).exists());
+    assert!(!family.seeded().join("debug").join(LOCK_FILE).exists());
     assert!(family.seeded().join("CACHEDIR.TAG").is_file());
 }
 
@@ -119,13 +133,33 @@ fn a_dry_run_copies_nothing_and_an_existing_target_is_refused() {
     let family = Family::new();
     let mut index = nowhere(&family.worktree_ws);
 
-    let planned = seed::seed(&family.worktree_ws, &family.source(), &mut index, true).unwrap();
+    let planned = seed::seed(
+        &family.worktree_ws,
+        &family.source(),
+        &CARGO,
+        &mut index,
+        true,
+    )
+    .unwrap();
 
     assert!(planned.files > 0);
     assert!(!family.seeded().exists());
 
-    seed::seed(&family.worktree_ws, &family.source(), &mut index, false).unwrap();
-    let again = seed::seed(&family.worktree_ws, &family.source(), &mut index, false);
+    seed::seed(
+        &family.worktree_ws,
+        &family.source(),
+        &CARGO,
+        &mut index,
+        false,
+    )
+    .unwrap();
+    let again = seed::seed(
+        &family.worktree_ws,
+        &family.source(),
+        &CARGO,
+        &mut index,
+        false,
+    );
     assert_eq!(
         again.unwrap_err().kind(),
         std::io::ErrorKind::AlreadyExists,
@@ -141,11 +175,18 @@ fn a_busy_source_profile_is_reported_and_not_copied() {
     // What cargo holds for the length of a build.
     let build = File::options()
         .write(true)
-        .open(profile.join(CARGO_LOCK_FILE))
+        .open(profile.join(LOCK_FILE))
         .unwrap();
     build.lock().unwrap();
 
-    let seeded = seed::seed(&family.worktree_ws, &family.source(), &mut index, false).unwrap();
+    let seeded = seed::seed(
+        &family.worktree_ws,
+        &family.source(),
+        &CARGO,
+        &mut index,
+        false,
+    )
+    .unwrap();
 
     assert_eq!(seeded.busy, [profile]);
     assert!(!family.seeded().join("debug").exists());
@@ -172,8 +213,18 @@ fn the_source_is_chosen_inside_the_family_and_its_copies_are_shared_in_the_index
     }
     assert!(!source_stamps.is_empty());
 
-    assert_eq!(seed::choose(&family.worktree_ws), Some(family.source()));
-    seed::seed(&family.worktree_ws, &family.source(), &mut index, false).unwrap();
+    assert_eq!(
+        seed::choose(&family.worktree_ws, &CARGO),
+        Some(family.source())
+    );
+    seed::seed(
+        &family.worktree_ws,
+        &family.source(),
+        &CARGO,
+        &mut index,
+        false,
+    )
+    .unwrap();
 
     for stamp in &source_stamps {
         assert!(index.get(stamp).unwrap().shared, "the source is shared now");
@@ -202,6 +253,7 @@ fn ab_a_seeded_worktree_builds_less_than_an_empty_one() {
     seed::seed(
         &treatment.worktree_ws,
         &treatment.source(),
+        &CARGO,
         &mut index,
         false,
     )

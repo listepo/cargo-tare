@@ -12,7 +12,8 @@ of the first step.
 
 Read off the code, not guessed:
 
-1. **One build system.** `model::is_cargo_target` is the only way a dir becomes work.
+1. **One build system.** `model::is_cargo_target` was the only way a dir became work (now
+   `eco::discover` over a registry of one).
 2. **Family comes from where the build dir is**, not from what it was built from:
    `inventory::git_link` walks up from the target looking for `.git`. A build dir outside the
    checkout — cargo's `build.build-dir`, an out-of-tree CMake dir, Xcode's DerivedData, a Bazel
@@ -35,7 +36,8 @@ Read off the code, not guessed:
 What already fits and stays: the inode model, the engine's re-check + temp + `rename`, the hash
 index keyed by `(dev, ino, size, mtime)`, `evict` by unit rather than by repository (a monorepo
 is always active, most of its build dirs are idle), locks taken in sorted path order, and
-`engine::Locks::{PerDir, Shared}` — which is a guard abstraction waiting for a third variant.
+`engine::Locks::{PerDir, Shared}` — which was a guard abstraction waiting for a third variant,
+and is now `eco::Guard`.
 
 ## Vocabulary
 
@@ -306,7 +308,19 @@ src/…             engine, model, index, inventory, dedupe, compress, evict, or
 
 The rule that goes with it, stated the way `sys` states its own: no build system's name, file
 or directory appears outside `src/eco/`. `model::CARGO_LOCK_FILE` and the `TARGET` constant in
-`seed.rs` are the first things to move.
+`seed.rs` were the first things to move.
+
+**Where this stands.** Done in T28: `src/eco/mod.rs` has the trait, `Guard`, `Policy`, the
+registry and the shared walk; `src/eco/cargo/` the cargo adapter, the cargo home adapter and
+every cargo-only module. The engine, the inode model, `seed`, `evict` and `orphans` no longer
+name a cargo file or dir. Differences from the sketch above: `claim` answers yes or no (a
+`Claim` with several dirs waits for .NET), units are paths, `private` and `volatile` are two
+questions (the lock file is never scanned, `incremental/` is scanned but never seeded), and
+`Policy` carries only `share` until a task needs the rest. Still naming cargo outside
+`src/eco/`: the session, which wires cargo's passes and reports, `seed`'s choice of adapter
+(T37 seeds every position) and the inventory's cargo-shaped status fields. `tests/monorepo.rs`
+is the monorepo fixture with the assertions that hold today: each build dir found once, the
+nested ones nobody's, every position one family, `seed` choosing by position.
 
 The daemon's loop lives in the binary's half because only a process has triggers; everything
 it *does* is a `Session` call. How the tool is invoked without cargo is settled with the first

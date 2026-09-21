@@ -11,7 +11,7 @@ Less than the name suggests. The engine never learned what a crate is:
 
 | Generic today | Cargo-specific today |
 | --- | --- |
-| `src/sys/` — clone, compress, identity, per-filesystem probe | discovery: `CACHEDIR.TAG` with cargo's sentence (`model::is_cargo_target`) |
+| `src/sys/` — clone, compress, identity, per-filesystem probe | discovery: `CACHEDIR.TAG` with cargo's sentence (`eco::cargo::is_target`) |
 | `src/model.rs` — the inode model, hardlink groups | unit of work: a profile dir, found by its `.cargo-lock` |
 | `src/engine.rs` — plan / apply, re-check, temp + `rename`, mtime and mode kept | build lock: `flock` on `.cargo-lock`, and `.package-cache` for the cargo home |
 | `src/index.rs` — hash cache keyed by `(dev, ino, size, mtime)` | `incremental`, `doc`, `toolchains`, `advise`, `cargo_home` |

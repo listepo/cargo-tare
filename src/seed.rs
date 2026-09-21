@@ -1,4 +1,4 @@
-//! `dunnage seed`: give a fresh checkout a target dir cloned from a sibling's. Where the
+//! `dunnage seed`: give a fresh checkout a build dir cloned from a sibling's. Where the
 //! filesystem shares blocks (APFS, btrfs, XFS) the copy costs nothing until one side is
 //! rewritten, and the new worktree starts with a warm target for free. Where it does not, the
 //! copy is a real one: it still saves the build, it no longer saves the disk.
@@ -9,17 +9,12 @@ use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
 
+use crate::eco::Ecosystem;
 use crate::engine::ProfileLock;
 use crate::index::HashIndex;
 use crate::inventory;
-use crate::model::{self, CARGO_LOCK_FILE, Stamp, TMP_PREFIX};
+use crate::model::{Stamp, TMP_PREFIX};
 use crate::sys;
-
-/// Cargo's own name for the incremental cache; seeding it would copy a cache that belongs to
-/// another checkout's build and that cargo will not use.
-const INCREMENTAL: &str = "incremental";
-/// The target dir of a checkout, as cargo names it by default.
-pub const TARGET: &str = "target";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Seeded {
@@ -43,28 +38,27 @@ fn checkout_root(dir: &Path) -> Option<&Path> {
     dir.ancestors().find(|above| above.join(".git").exists())
 }
 
-/// The best target to seed from: in the sibling checkouts of the same repository, at the same
+/// The best build dir to seed from: in the sibling checkouts of the same repository, at the same
 /// place inside them as `checkout` is inside its own, the one built most recently. `None` when
-/// the checkout has no repository, no siblings, or none of them has a target there.
-pub fn choose(checkout: &Path) -> Option<PathBuf> {
+/// the checkout has no repository, no siblings, or none of them has a build dir there.
+pub fn choose(checkout: &Path, eco: &dyn Ecosystem) -> Option<PathBuf> {
     let root = checkout_root(checkout)?;
     // A workspace can sit anywhere inside a checkout; its sibling sits in the same place.
     let relative = checkout.strip_prefix(root).ok()?;
-    let common = inventory::family(&checkout.join(TARGET))?;
+    let common = inventory::family(checkout)?;
     let mut best: Option<(u64, PathBuf)> = None;
     for sibling in inventory::checkouts(&common) {
         let sibling = sibling.canonicalize().unwrap_or(sibling);
         if sibling == root {
             continue;
         }
-        let target = sibling.join(relative).join(TARGET);
-        let Ok(profiles) = model::profile_dirs(&target) else {
+        let Some(target) = eco.build_dir(&sibling.join(relative)) else {
             continue;
         };
-        let built = profiles
-            .iter()
-            .filter_map(|dir| inventory::last_built(dir))
-            .max();
+        let Ok(profiles) = eco.units(&target) else {
+            continue;
+        };
+        let built = profiles.iter().filter_map(|dir| eco.last_used(dir)).max();
         // A target nobody ever built is still better than nothing, hence `unwrap_or(0)`.
         let built = built.unwrap_or(0);
         if best.as_ref().is_none_or(|(seen, _)| built > *seen) {
@@ -74,25 +68,32 @@ pub fn choose(checkout: &Path) -> Option<PathBuf> {
     best.map(|(_, target)| target)
 }
 
-/// Copies `source` (a target dir) to `<checkout>/target`. The destination must not exist yet:
-/// this seeds a fresh checkout and never merges into a target somebody is already using.
+/// Copies `source` (a build dir) to where `eco` puts the build dir of `checkout`. The destination
+/// must not exist yet: this seeds a fresh checkout and never merges into a build dir somebody is
+/// already using.
 ///
 /// The index gets the copies of every source file it already knows, marked shared on both
 /// sides, so the next dedupe run leaves the pair alone.
 pub fn seed(
     checkout: &Path,
     source: &Path,
+    eco: &dyn Ecosystem,
     index: &mut HashIndex,
     dry_run: bool,
 ) -> io::Result<Seeded> {
-    let target = checkout.join(TARGET);
+    let target = eco.build_dir(checkout).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("a {} build dir cannot be seeded", eco.name()),
+        )
+    })?;
     if target.exists() {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             format!("{} already has a target dir", checkout.display()),
         ));
     }
-    // Cargo's lock per source profile dir, held for the whole walk: a build writing into the
+    // The build's lock per source unit, held for the whole walk: a build writing into the
     // source would otherwise be copied half way.
     let mut locks = Vec::new();
     let mut seeded = Seeded {
@@ -102,8 +103,8 @@ pub fn seed(
         shared_blocks: crate::sys::caps(checkout).clone,
         ..Seeded::default()
     };
-    for dir in model::profile_dirs(source)? {
-        match ProfileLock::try_acquire(&dir)? {
+    for dir in eco.units(source)? {
+        match ProfileLock::try_guard(&eco.guard(&dir))? {
             Some(lock) => locks.push((dir, lock)),
             None => seeded.busy.push(dir),
         }
@@ -112,8 +113,8 @@ pub fn seed(
     let skipped = |entry: &walkdir::DirEntry| {
         let name = entry.file_name();
         let busy = seeded.busy.iter().any(|dir| entry.path().starts_with(dir));
-        busy || name == INCREMENTAL
-            || name == CARGO_LOCK_FILE
+        busy || eco.volatile(name)
+            || eco.private(name)
             || name.to_string_lossy().starts_with(TMP_PREFIX)
     };
     let walk = WalkDir::new(source)

@@ -1,6 +1,5 @@
 - T24. A place where the Windows tests run
 - T21. Windows: NTFS compression and ReFS block cloning
-- T28. Adapter boundary: what is cargo and what is not
 - T29. A safety tier for build systems without a build lock
 - T30. Swift: SwiftPM `.build/` and Xcode DerivedData
 - T31. .NET: `bin/` and `obj/`

@@ -4,8 +4,8 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use dunnage::eco::cargo::LOCK_FILE;
 use dunnage::inventory::{self, Target};
-use dunnage::model::CARGO_LOCK_FILE;
 use tempfile::TempDir;
 
 const CARGO_TAG: &str = "Signature: 8a477f597d28d172789f06886806bc55\n\
@@ -26,7 +26,7 @@ fn root() -> (TempDir, PathBuf) {
 fn make_target(target: &Path) {
     fs::create_dir_all(target.join("debug/deps")).unwrap();
     fs::write(target.join("CACHEDIR.TAG"), CARGO_TAG).unwrap();
-    File::create(target.join("debug").join(CARGO_LOCK_FILE)).unwrap();
+    File::create(target.join("debug").join(LOCK_FILE)).unwrap();
 }
 
 fn find<'a>(targets: &'a [Target], root: &Path) -> &'a Target {

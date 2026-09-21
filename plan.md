@@ -12,7 +12,6 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | --- | --- | --- | --- | --- | --- |
 | T24 | todo | P1 | 3 | 0% | |
 | T21 | todo | P2 | 5 | 0% | |
-| T28 | todo | P2 | 4 | 0% | |
 | T29 | todo | P2 | 4 | 0% | |
 | T30 | todo | P2 | 4 | 0% | |
 | T31 | todo | P2 | 4 | 0% | |
@@ -26,8 +25,7 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | T35 | todo | P3 | 2 | 0% | |
 
 Blockers, take these first. **T24** blocks T21: nothing on Windows can be tested without it.
-**T28** blocks T29–T33, T35 and T37–T40: every
-adapter and every monorepo behavior sits on its boundary. **T29** blocks T31, T32, T33 and the
+**T29** blocks T31, T32, T33 and the
 Xcode half of T30, which have no build lock to take. **T33** blocks T35. T35 is the
 lowest priority in the plan by the creator's word: take it only when nothing else is free.
 
@@ -122,28 +120,6 @@ Suggested split if the creator wants it smaller: (a) test environment + item 2 �
 (b) identity and the signature change, (c) NTFS compression, (d) ReFS cloning, (e) paths and
 docs.
 
-### T28. Adapter boundary: what is cargo and what is not
-
-`docs/ecosystems.md`, first table: the engine, the inode model, the hash index, `src/sys/` and
-the two lossless passes know nothing about cargo; discovery (`CACHEDIR.TAG`), the unit of work
-(a profile dir), the lock (`.cargo-lock`), "last built", what `seed` leaves behind and the
-cargo-only passes do. Put the second list behind one trait answering the six questions of that
-document — discover, lock, freshness-relevant volatile paths, owner, last use, and the oracle in
-tests — with cargo as its only implementation. No crate split until a second binary needs one,
-no new flag, no behavior change: the existing tests and the `--help` snapshots are the
-proof. The card of the first non-cargo adapter decides how an ecosystem is selected on the
-command line; this one only makes room for it.
-
-The shape is worked out in `docs/architecture.md`: the `Ecosystem` trait and its `Guard` /
-`Policy` answers, `src/eco/` as the twin of `src/sys/`, one shared discovery walk where the
-outermost claim wins (a CMake dir inside a cargo target is nobody else's), and family and
-position computed from the build dir's *owner* rather than from where it sits — which is what
-gives an out-of-tree `build-dir` a family at all. Part of done: the monorepo fixture described
-there, with the assertions that already hold.
-
-Sits on T36: discovery and the adapters are reached through the session, and `Guard::Held` is
-reserved in the enum for an embedding caller (R8) without being implemented.
-
 ### T29. A safety tier for build systems without a build lock
 
 Cargo holds one advisory lock for the whole build; Ninja, Make, MSBuild and Xcode hold nothing
@@ -232,7 +208,7 @@ root seeds every position: for each build dir of the sibling checkouts whose ada
 seeding, if the owner's project exists in the new checkout and the position is empty, clone it
 from the sibling where *that position* was built most recently — no single worktree is the
 newest everywhere. Positions whose project is absent on this branch are skipped. `seed <dir>`
-keeps today's meaning. `dunnage worktree add` (T26) gets it for free. Needs T28's owner and
+keeps today's meaning. `dunnage worktree add` (T26) gets it for free. Uses T28's owner and
 position. Done: on the monorepo fixture, two workspaces are seeded from two different siblings
 and the project that exists on one branch only is left alone; the oracle is green for both.
 
@@ -254,7 +230,7 @@ One line per target stops being a report at a few dozen build dirs. `status` gro
 checkout → subtotal per ecosystem, lists the largest build dirs up to a limit and the rest with
 `--all`; `--json` stays flat and gains `ecosystem`, `checkout`, `position` and `guard` per build
 dir, existing keys unchanged. Config gains `skip-paths` per family — positions as prefixes, so
-no glob crate — and a per-family `ecosystems` list narrower than the global one. Needs T28.
+no glob crate — and a per-family `ecosystems` list narrower than the global one.
 Done: `tests/cmd` snapshots for a fixture with many build dirs; a skipped position is neither
 reported as work nor touched; `docs/usage.md` documents both.
 
@@ -266,7 +242,7 @@ nothing each time. Persist what discovery found next to the hash index — build
 owner, marker stamp — re-validate entries by their markers, and walk only on a slow cadence,
 on `--rediscover`, or when a root's own mtime says something moved. Measure first: the task
 starts with a walk benchmark on a large checkout and closes with "not needed" if discovery is
-already a small share of a settled re-run. Needs T28.
+already a small share of a settled re-run.
 
 ### T35. Go: `GOCACHE` and `GOMODCACHE`
 

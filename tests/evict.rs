@@ -4,10 +4,10 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use dunnage::engine::{self, Locks, Options, Report};
+use dunnage::eco::cargo::{CARGO, LOCK_FILE};
+use dunnage::engine::{self, Options, Report};
 use dunnage::evict::{self, Evict, Limits};
 use dunnage::inventory;
-use dunnage::model::CARGO_LOCK_FILE;
 use predicates::str::contains;
 use tempfile::TempDir;
 
@@ -49,7 +49,7 @@ fn run(root: &Path, limits: Limits, opts: &Options) -> Report {
             .collect();
         let dirs: Vec<PathBuf> = profiles.iter().map(|profile| profile.dir.clone()).collect();
         let pass = Evict::new(evict::select(&profiles, now_unix(), limits));
-        engine::run(&dirs, &[&pass], opts, Locks::PerDir).unwrap()
+        engine::run(&dirs, &[&pass], opts, &CARGO).unwrap()
     })
 }
 
@@ -103,7 +103,7 @@ fn a_profile_with_a_running_build_is_not_touched() {
     // What cargo does for the length of a build. Opening the lock file does not age the dir.
     let build = File::options()
         .write(true)
-        .open(old.join(CARGO_LOCK_FILE))
+        .open(old.join(LOCK_FILE))
         .unwrap();
     build.lock().unwrap();
 
@@ -124,15 +124,8 @@ fn a_profile_built_after_the_inventory_is_kept() {
 
     // A build slips in between the inventory and our lock.
     fs::write(old.join("fresh-artifact"), b"new").unwrap();
-    let report = run_unbusy(|| {
-        engine::run(
-            std::slice::from_ref(&old),
-            &[&pass],
-            &named(),
-            Locks::PerDir,
-        )
-        .unwrap()
-    });
+    let report =
+        run_unbusy(|| engine::run(std::slice::from_ref(&old), &[&pass], &named(), &CARGO).unwrap());
 
     assert_eq!(report.passes[0].planned, 0, "{report:?}");
     assert!(old.join("deps/libx.rlib").exists());
