@@ -131,6 +131,11 @@ struct RunArgs {
     /// this many days
     #[arg(long, value_name = "DAYS")]
     incremental_idle_days: Option<u64>,
+    /// With `--lossy orphans`: also remove the build dirs of projects whose manifest is gone —
+    /// deleted, renamed, or absent on this branch — once nothing was built there for this many
+    /// days. Without it they are only reported
+    #[arg(long, value_name = "DAYS")]
+    orphans_project_idle_days: Option<u64>,
     /// Leave files younger than this alone, in seconds; both lossless passes [default: 3600]
     #[arg(long, value_name = "SECS")]
     min_age: Option<u64>,
@@ -322,7 +327,13 @@ fn print_inventory(inventory: &Inventory) {
         let built = target.last_built_unix.map_or("never built".into(), |at| {
             format!("built {}d ago", now.saturating_sub(at) / SECS_PER_DAY)
         });
-        let orphaned = if target.orphaned { "  ORPHANED" } else { "" };
+        let orphaned = if target.orphaned {
+            "  ORPHANED"
+        } else if target.project_gone {
+            "  PROJECT GONE"
+        } else {
+            ""
+        };
         println!(
             "  {:>11}  {built:<16}{orphaned}  {}",
             gib(target.allocated_bytes),
@@ -477,6 +488,9 @@ fn request(args: RunArgs, config: &Config) -> Request {
     request.evict_whole_target |= args.evict_whole_target;
     if let Some(days) = args.incremental_idle_days {
         request.incremental_idle_days = Some(days);
+    }
+    if let Some(days) = args.orphans_project_idle_days {
+        request.orphans_project_idle_days = Some(days);
     }
     if let Some(secs) = args.min_age {
         request.min_age = Some(Duration::from_secs(secs));

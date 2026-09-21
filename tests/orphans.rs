@@ -103,8 +103,10 @@ fn chosen(inventory: &inventory::Inventory) -> Orphans {
                 target: target.root.clone(),
                 project: target.project.clone().unwrap(),
                 allocated_bytes: target.allocated_bytes,
+                reason: orphans::Reason::CheckoutGone,
             })
             .collect(),
+        0,
     )
 }
 
@@ -279,4 +281,107 @@ fn cli_removes_an_orphan_only_when_asked() {
         .stdout(contains("orphans: planned 1"));
     assert!(!wt.parent().unwrap().exists());
     assert!(root.join("wt/uncommitted.rs").exists());
+}
+
+/// A project whose `Cargo.toml` was deleted `days` after its last build, alone in `root`.
+fn gone_project(root: &Path, days: u64) -> PathBuf {
+    let profile = fake_target(root, "gone", PROFILE_KIB, days);
+    fs::remove_file(root.join("gone/Cargo.toml")).unwrap();
+    profile.parent().unwrap().to_path_buf()
+}
+
+fn cli(root: &Path) -> assert_cmd::Command {
+    let mut cmd = dunnage_in(root);
+    cmd.args(["run", "--pass", "orphans", "--lossy", "orphans", "--index"]);
+    cmd.arg(root.join("index.bin"));
+    cmd
+}
+
+#[test]
+fn a_gone_project_idle_long_enough_loses_its_target_and_nothing_else() {
+    let (_tmp, root) = root();
+    let target = gone_project(&root, 10);
+    fs::write(root.join("gone/notes.txt"), b"kept").unwrap();
+
+    cli(&root)
+        .args(["--orphans-project-idle-days", "7"])
+        .arg(&root)
+        .assert()
+        .success()
+        .stdout(contains("Cargo.toml is gone"))
+        .stdout(contains("orphans: planned 1"));
+
+    assert!(!target.exists());
+    assert!(root.join("gone/notes.txt").exists());
+}
+
+#[test]
+fn a_gone_project_is_only_reported_when_recent_or_without_a_threshold() {
+    let (_tmp, root) = root();
+    let target = gone_project(&root, 2);
+
+    // No threshold: the pass has nothing to do with it, `status` names it.
+    cli(&root)
+        .arg(&root)
+        .assert()
+        .success()
+        .stdout(contains("orphans: planned 0"));
+    dunnage_in(&root)
+        .args(["status"])
+        .arg(&root)
+        .assert()
+        .success()
+        .stdout(contains("PROJECT GONE"));
+    // Built two days ago: a branch switch looks the same as a deletion, so a week is asked for.
+    cli(&root)
+        .args(["--orphans-project-idle-days", "7"])
+        .arg(&root)
+        .assert()
+        .success()
+        .stdout(contains("orphans: planned 0"));
+
+    assert!(target.join("debug/deps/libx.rlib").exists());
+}
+
+#[test]
+fn a_manifest_back_before_the_lock_keeps_the_target() {
+    let (_tmp, root) = root();
+    let target = gone_project(&root, 10);
+    let inventory = inventory::inventory(std::slice::from_ref(&root)).unwrap();
+    assert!(inventory.targets[0].project_gone);
+    let pass = Orphans::new(
+        vec![Orphan {
+            target: target.clone(),
+            project: root.join("gone"),
+            allocated_bytes: 0,
+            reason: orphans::Reason::ProjectGone {
+                manifest: root.join("gone/Cargo.toml"),
+                idle_days: 7,
+            },
+        }],
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    );
+
+    // `git switch` back to the branch that has the project, between the inventory and the lock.
+    fs::write(root.join("gone/Cargo.toml"), "").unwrap();
+    let dirs = profile_dirs(&inventory);
+    let report = run_unbusy(|| engine::run(&dirs, &[&pass], &named(), &CARGO).unwrap());
+
+    assert_eq!(report.passes[0].planned, 0, "{report:?}");
+    assert!(target.exists());
+}
+
+#[test]
+fn the_threshold_needs_the_pass() {
+    let (_tmp, root) = root();
+    dunnage_in(&root)
+        .args(["run", "--orphans-project-idle-days", "7", "--index"])
+        .arg(root.join("index.bin"))
+        .arg(&root)
+        .assert()
+        .failure()
+        .stderr(contains("needs `--lossy orphans`"));
 }

@@ -111,6 +111,8 @@ pub struct Request {
     /// Remove a target dir itself once `evict` took every profile dir of it.
     pub evict_whole_target: bool,
     pub incremental_idle_days: Option<u64>,
+    /// With `orphans`: also remove build dirs whose project is gone, once idle this many days.
+    pub orphans_project_idle_days: Option<u64>,
     /// Leave younger files alone; `None` keeps each pass's default.
     pub min_age: Option<Duration>,
     /// Leave smaller files alone; `None` keeps each pass's default.
@@ -142,6 +144,7 @@ impl Request {
             },
             evict_whole_target: config.evict.whole_target,
             incremental_idle_days: config.incremental.idle_days,
+            orphans_project_idle_days: config.orphans.project_idle_days,
             min_age: config.min_age.map(Duration::from_secs),
             min_size: config.min_size,
             across_families: config.across_families,
@@ -179,6 +182,10 @@ impl Request {
         ensure(
             self.enables(incremental::NAME) == self.incremental_idle_days.is_some(),
             || "`--lossy incremental` and `--incremental-idle-days` need each other".into(),
+        )?;
+        ensure(
+            self.orphans_project_idle_days.is_none() || self.enables(orphans::NAME),
+            || "`--orphans-project-idle-days` needs `--lossy orphans`".into(),
         )
     }
 
@@ -537,20 +544,33 @@ impl Session {
         // Cargo keeps `incremental/` for workspace members only, so this costs one plain rebuild.
         let idle_days = request.incremental_idle_days.unwrap_or(u64::MAX);
         let incremental = Incremental::new(incremental::select(&profiles, now_unix(), idle_days));
-        // Whole targets of checkouts git no longer registers; the sources next to them stay.
+        // Whole targets of checkouts git no longer registers, and of projects gone for as long
+        // as the request allows; the sources next to them stay.
         let orphans = Orphans::new(
             inventory
                 .targets
                 .iter()
-                .filter(|target| target.orphaned)
                 .filter_map(|target| {
+                    let project = target.project.clone()?;
+                    let reason = if target.orphaned {
+                        orphans::Reason::CheckoutGone
+                    } else if target.project_gone {
+                        orphans::Reason::ProjectGone {
+                            manifest: eco::named(target.ecosystem)?.manifest(&project)?,
+                            idle_days: request.orphans_project_idle_days?,
+                        }
+                    } else {
+                        return None;
+                    };
                     Some(Orphan {
                         target: target.root.clone(),
-                        project: target.project.clone()?,
+                        project,
                         allocated_bytes: target.allocated_bytes,
+                        reason,
                     })
                 })
                 .collect(),
+            now_unix(),
         );
         // `cargo doc` writes this dir again from scratch and no build reads it.
         let docs = Doc::new(

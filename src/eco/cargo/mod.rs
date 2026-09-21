@@ -50,6 +50,10 @@ impl Ecosystem for Cargo {
         Some(Owner { project })
     }
 
+    fn manifest(&self, project: &Path) -> Option<PathBuf> {
+        Some(project.join("Cargo.toml"))
+    }
+
     fn build_dir(&self, project: &Path) -> Option<PathBuf> {
         Some(project.join(TARGET))
     }

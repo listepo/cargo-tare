@@ -21,7 +21,7 @@ Read off the code, not guessed:
 3. **`seed` knows one position.** `seed::choose` already has the right idea — "the same place
    inside the sibling checkout" — but for one dir with the hardcoded name `target`. A monorepo
    checkout has dozens of build dirs to seed.
-4. **`orphans` knows one kind of owner:** a worktree whose git record is gone. In a monorepo the
+4. **`orphans` knew one kind of owner** (T38 added the second, *project gone*): a worktree whose git record is gone. In a monorepo the
    common orphan is smaller: a project deleted, renamed, or absent on this branch, whose `obj/`
    or build dir stays behind in a checkout that is very much alive.
 5. **Discovery is one walk per question.** One walk with one marker is fine; five adapters doing

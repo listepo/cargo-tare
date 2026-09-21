@@ -16,7 +16,7 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | T31 | todo | P2 | 4 | 0% | |
 | T32 | todo | P2 | 4 | 0% | |
 | T34 | todo | P2 | 4 | 0% | |
-| T38 | todo | P2 | 3 | 0% | |
+| T38.1 | todo | P2 | 3 | 0% | |
 | T39 | todo | P3 | 2 | 0% | |
 | T40 | todo | P3 | 3 | 0% | |
 | T35 | todo | P3 | 2 | 0% | |
@@ -173,17 +173,20 @@ watcher crate (`notify` is the candidate) is a new dependency and the creator's 
 time; the timers alone are a complete first version. Logging is the observer's events on
 stderr, which launchd and journald already collect — no logging crate.
 
-### T38. Monorepo: `orphans` for a project that is gone
+### T38.1. Monorepo: an owner for a build dir outside its checkout
 
-Today an orphan is a worktree whose git record is gone. In a monorepo the common orphan is
-smaller: a project deleted, renamed or absent on this branch, whose build dir stays behind in a
-live checkout. A second reason for the same lossy pass, from T28's owner: the owner's manifest
-no longer exists. A branch switch produces the same picture as a deletion, so this reason
-removes only units idle for longer than a threshold (`evict`'s `idle-days`, or one of its own)
-and is otherwise only reported, by `status` and `advise` too. The *checkout gone* reason now
-also covers build dirs outside the checkout (`build.build-dir`), which have no family today.
-Done: fixture tests for both reasons, for "reported, not removed" without a threshold, and for
-an out-of-tree build dir landing in its owner's family.
+Split off from T38. A cargo target moved out of the checkout by `build.build-dir` (or
+`CARGO_TARGET_DIR`) has no family: `inventory::git_link` walks up from the target, not from the
+project, and the build dir records no path back to the workspace that built it. Such a dir gets
+no dedupe partner, no `seed` source and no *checkout gone* orphan status. Done: an out-of-tree
+build dir lands in its owner's family, and `orphans` removes it when that owner's checkout is
+gone, with a fixture test for both.
+
+**Question for the creator before this starts:** where does the owner come from? Options:
+(a) read the absolute source paths in the profile's dep-info `.d` files — present in every
+build, but it is parsing cargo's output, a heuristic; (b) a record dunnage writes itself when
+`seed`/`worktree add`/the daemon sees a build dir being used from a workspace — exact, but only
+for dirs it has seen; (c) configuration: `[owners]` mapping build dirs to workspaces.
 
 ### T39. Monorepo: grouped `status` and `skip-paths`
 

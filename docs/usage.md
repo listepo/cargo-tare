@@ -45,7 +45,8 @@ dunnage run ~/code                 # 4. do it
 
 1. `status` finds every cargo target dir under the root, groups them by repository (a *family*:
    one repository and its worktrees), and prints the size on disk, the days since the last
-   build, `ORPHANED` for worktrees git no longer knows, and how much is still uncompressed or
+   build, `ORPHANED` for worktrees git no longer knows, `PROJECT GONE` for targets whose
+   `Cargo.toml` is gone, and how much is still uncompressed or
    could be shared.
 2. `advise` reads manifests and cargo configs and names the keys that inflate the targets —
    debuginfo levels, a missing `strip`, ignored `[unstable]` keys — with the file each one
@@ -64,7 +65,7 @@ projects: it must report nothing to recompile.
 | --- | --- | --- | --- |
 | `compress` | lossless | transparent filesystem compression of files ≥ 8 KB older than 1 h | always |
 | `dedupe` | lossless | equal files become copy-on-write clones of one copy | always |
-| `orphans` | **deletes** | the whole `target/` of a worktree git no longer registers | `--lossy orphans` |
+| `orphans` | **deletes** | the whole `target/` of a worktree git no longer registers; with `--orphans-project-idle-days N`, also of a project whose `Cargo.toml` is gone and that was not built for N days | `--lossy orphans` |
 | `evict` | **deletes** | profile dirs idle for N days, or the least recently built above a size cap | `--lossy evict` + a threshold |
 | `incremental` | **deletes** | `incremental/` of profile dirs idle for N days | `--lossy incremental --incremental-idle-days N` |
 | `doc` | **deletes** | `<target>/doc` | `--lossy doc` |
@@ -171,6 +172,13 @@ dunnage run --dry-run --lossy orphans ~/code
 dunnage run --lossy orphans ~/code
 ```
 
+The targets of crates deleted from a checkout that is still in use, once they were not built for
+a week (a crate that only another branch has looks the same, hence the wait):
+
+```
+dunnage run --lossy orphans --orphans-project-idle-days 7 ~/code
+```
+
 Keep all targets under a budget:
 
 ```
@@ -218,6 +226,9 @@ idle-days = 30
 
 [family."/Users/me/code/monorepo/.git"]
 skip = true
+
+[orphans]
+project-idle-days = 7  # as --orphans-project-idle-days
 ```
 
 The family key is the git common dir that `status` prints for the family.

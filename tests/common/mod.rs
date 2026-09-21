@@ -241,12 +241,14 @@ pub fn run_unbusy(mut engine_run: impl FnMut() -> Report) -> Report {
     total
 }
 
-/// A cargo-tagged target with one profile dir of about `kib` KiB, last built `days` ago.
+/// A cargo-tagged target with one profile dir of about `kib` KiB, last built `days` ago, next to
+/// a `Cargo.toml` so its project reads as present.
 /// The age is the profile dir's own entries, which is what the inventory reads; the artifact
 /// inside `deps/` stays as young as the call, which is what the pass age floors read.
 pub fn fake_target(root: &Path, name: &str, kib: usize, days: u64) -> PathBuf {
     let target = root.join(name).join("target");
     fs::create_dir_all(&target).unwrap();
+    fs::write(root.join(name).join("Cargo.toml"), "").unwrap();
     fs::write(target.join("CACHEDIR.TAG"), CARGO_TAG).unwrap();
     fake_profile(&target, "debug", kib, days)
 }

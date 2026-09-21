@@ -31,6 +31,12 @@ pub trait Ecosystem: Sync {
         None
     }
 
+    /// The file that makes `project` a project of this build system. Missing: the build dir's
+    /// reason is gone — the project was deleted, renamed, or is absent on this branch.
+    fn manifest(&self, _project: &Path) -> Option<PathBuf> {
+        None
+    }
+
     /// Where a build of `project` goes when nothing says otherwise: what `seed` fills. `None`
     /// where a build dir cannot be seeded.
     fn build_dir(&self, _project: &Path) -> Option<PathBuf> {

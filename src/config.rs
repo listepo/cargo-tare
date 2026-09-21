@@ -39,6 +39,8 @@ pub struct Config {
     pub incremental: Incremental,
     #[serde(default)]
     pub index: Index,
+    #[serde(default)]
+    pub orphans: OrphansConfig,
     /// Per-family overrides, keyed by the family's dir: the git common dir of the repository and
     /// its worktrees, or the target dir itself when there is no repository.
     #[serde(default)]
@@ -59,6 +61,14 @@ pub struct Evict {
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Incremental {
     pub idle_days: Option<u64>,
+}
+
+/// `[orphans]`: the pass that removes build dirs whose reason is gone.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct OrphansConfig {
+    /// Also remove build dirs whose project manifest is gone, once idle this many days.
+    pub project_idle_days: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]

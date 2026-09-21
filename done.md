@@ -49,3 +49,40 @@ worktree that built it last, `cli` from the main checkout, `legacy` (absent on t
 left alone, a second seed has nothing to do. `tests/worktree.rs`: `worktree add` from the root
 of a real two-workspace repository seeds both, and cargo reports the vendored dependency fresh in
 both — the oracle. `~/.cache/dunnage` absent.
+
+### T38. Monorepo: `orphans` for a project that is gone
+
+Today an orphan is a worktree whose git record is gone. In a monorepo the common orphan is
+smaller: a project deleted, renamed or absent on this branch, whose build dir stays behind in a
+live checkout. A second reason for the same lossy pass, from T28's owner: the owner's manifest
+no longer exists. A branch switch produces the same picture as a deletion, so this reason
+removes only units idle for longer than a threshold (`evict`'s `idle-days`, or one of its own)
+and is otherwise only reported, by `status` and `advise` too. The *checkout gone* reason now
+also covers build dirs outside the checkout (`build.build-dir`), which have no family today.
+Done: fixture tests for both reasons, for "reported, not removed" without a threshold, and for
+an out-of-tree build dir landing in its owner's family.
+
+#### Result
+
+- `Ecosystem::manifest(project)` (cargo: `Cargo.toml`); `inventory::Target::project_gone` when
+  it is missing from a checkout that is otherwise there (JSON `project_gone`).
+- `orphans::Reason::{CheckoutGone, ProjectGone { manifest, idle_days }}`, printed with every
+  removal. A gone project goes only with `--orphans-project-idle-days N` /
+  `[orphans] project-idle-days`, which needs `--lossy orphans`, and only when the newest
+  `last_used` of its locked profiles is N days old; no `last_used` means not idle. Under the
+  lock the manifest must still be missing, so a switch back to the branch keeps the target.
+- Without the threshold: reported only, `PROJECT GONE` in `status` and a note in `advise`.
+- The out-of-tree half (`build.build-dir` targets getting an owner) is T38.1: the build dir
+  records no owner, and how to learn it is the creator's call.
+- Test fixtures' `fake_target` writes a `Cargo.toml` next to its target.
+- Docs: `README.md`, `docs/usage.md`, `DESIGN.md` orphans section, `docs/architecture.md`.
+- `todo.md`, emptied by accident in the T33 commit, restored.
+
+#### Verified
+
+`just check` (164 tests) and `just check-cross` green. `tests/orphans.rs`: a gone project idle
+ten days loses its target with a seven-day threshold while a file next to it stays; built two
+days ago, or with no threshold, it is only reported (`PROJECT GONE` in `status`, `planned 0`);
+a `Cargo.toml` back between the inventory and the lock keeps the target; the threshold without
+`--lossy orphans` is an error. The worktree orphan tests still pass unchanged.
+`~/.cache/dunnage` absent.

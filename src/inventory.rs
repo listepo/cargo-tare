@@ -42,6 +42,9 @@ pub struct Target {
     pub family: Option<PathBuf>,
     /// The project is a git worktree whose record in the repository is gone.
     pub orphaned: bool,
+    /// The project's manifest is gone: deleted, renamed, or absent on this branch. The two look
+    /// the same, so this is reported and removed only when the build dir is idle long enough.
+    pub project_gone: bool,
     pub inodes: usize,
     pub paths: usize,
     pub logical_bytes: u64,
@@ -147,6 +150,9 @@ fn inspect(root: &Path, eco: &'static dyn Ecosystem) -> io::Result<(Target, Hash
         .collect();
     let project = eco.owner(root).map(|owner| owner.project);
     let (family, orphaned) = project.as_deref().map_or((None, false), git_link);
+    let project_gone = project
+        .as_deref()
+        .is_some_and(|project| is_project_gone(eco, project));
     let mut target = Target {
         root: root.to_path_buf(),
         ecosystem: eco.name(),
@@ -155,6 +161,7 @@ fn inspect(root: &Path, eco: &'static dyn Ecosystem) -> io::Result<(Target, Hash
         profiles,
         family,
         orphaned,
+        project_gone,
         inodes: 0,
         paths: 0,
         logical_bytes: 0,
@@ -220,6 +227,13 @@ fn inspect(root: &Path, eco: &'static dyn Ecosystem) -> io::Result<(Target, Hash
 /// repeat under the lock, which is what the `orphans` pass does.
 pub fn is_orphaned(project: &Path) -> bool {
     git_link(project).1
+}
+
+/// Whether the manifest that makes `project` a project of `eco` is missing. An adapter with no
+/// manifest never says so.
+pub fn is_project_gone(eco: &dyn Ecosystem, project: &Path) -> bool {
+    eco.manifest(project)
+        .is_some_and(|manifest| fs::symlink_metadata(manifest).is_err())
 }
 
 /// The git common dir of the repository `project` is in, if it is in one.

@@ -452,7 +452,16 @@ copied.
 
 ## Orphans pass (`src/orphans.rs`)
 
-Lossy, so it runs only with `--lossy orphans`. No threshold: an orphan either is one or is not.
+Lossy, so it runs only with `--lossy orphans`. Two reasons (`orphans::Reason`), both printed:
+
+- **Checkout gone.** No threshold: an orphan either is one or is not. The rest of this section.
+- **Project gone.** The adapter's manifest (`Ecosystem::manifest`, `Cargo.toml` for cargo) is
+  missing from a checkout that is otherwise alive (`Target::project_gone`). A branch switch
+  produces the same picture as a deletion, so this reason needs a threshold of its own,
+  `--orphans-project-idle-days` / `[orphans] project-idle-days`, and the newest `last_used` of
+  the target's locked profiles must be at least that old; a profile with no `last_used` is not
+  idle. Without the threshold the target is only reported (`status`, `advise`). Under the lock
+  the manifest must still be missing: switching back to the branch keeps the target.
 
 - **What an orphan is.** A project whose `.git` file points at a worktree record
   (`<common dir>/worktrees/<name>`) that no longer exists — the repository was deleted, moved,
@@ -700,7 +709,7 @@ dunnage run [--dry-run] [--lossy <PASS>]... [--index <FILE>] [<ROOT>]...
                [--evict-idle-days <N>] [--evict-max-total-gib <N>]   # with --lossy evict
                [--evict-whole-target]                                # with --lossy evict
                [--incremental-idle-days <N>]        # with --lossy incremental
-                                                    # --lossy orphans: no threshold
+               [--orphans-project-idle-days <N>]    # with --lossy orphans: projects gone
                [--pass <PASS>]... [--min-age <SECS>] [--min-size <BYTES>]  # benchmarks
 dunnage seed [--from <DIR>] [--dry-run] [--index <FILE>] [<DIR>]  # clone a sibling's target
 dunnage worktree add [--dry-run] [--index <FILE>] <GIT ARGS>... # git worktree add, then seed

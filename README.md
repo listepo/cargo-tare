@@ -61,7 +61,8 @@ dunnage run --lossy evict --evict-max-total-gib 50 ~/code
 ```
 
 `status` lists cargo target dirs grouped by family (a repository and its worktrees): size on disk
-as `du` counts it, days since the last build, `ORPHANED` for a worktree git no longer knows, and
+as `du` counts it, days since the last build, `ORPHANED` for a worktree git no longer knows, `PROJECT GONE` for a target whose `Cargo.toml`
+is gone from a live checkout, and
 totals — bytes not compressed yet and an upper bound of what dedupe could share.
 
 `run` applies two lossless passes. **compress**: files of 8 KB and more get transparent APFS
@@ -87,7 +88,10 @@ they exist for measurements, and the defaults are what `docs/bench.md` justifies
 `target/` of a checkout that is a git worktree the repository no longer registers (its `.git`
 file points at a missing worktree record). Nothing outside `target/` is touched — such a
 checkout can hold work git can no longer report. No threshold, and every removal is printed
-with its reason on a dry run too.
+with its reason on a dry run too. A target whose `Cargo.toml` is gone from a checkout that is
+still there — a deleted crate, or one only another branch has — goes too, but only with
+`--orphans-project-idle-days N` and only once it has not been built for N days: a branch switch
+looks exactly like a deletion. Without the flag it is only reported.
 
 **seed** copies instead of deleting. In a fresh worktree, `dunnage seed` clones the target of
 a sibling checkout of the same repository — the one built most recently, at the same place
@@ -192,6 +196,9 @@ min-size = 8192             # bytes; both lossless passes
 idle-days = 30
 max-total-gib = 50
 whole-target = true         # take the target dir itself once all of its profiles are evicted
+
+[orphans]
+project-idle-days = 7       # with `orphans`: also a target whose Cargo.toml is gone, idle this long
 
 [incremental]
 idle-days = 7

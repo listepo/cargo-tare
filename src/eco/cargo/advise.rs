@@ -224,6 +224,22 @@ pub fn notes(targets: &[Target]) -> Vec<Note> {
             ),
         );
     }
+    let gone: Vec<&Target> = targets
+        .iter()
+        .filter(|target| target.project_gone && !target.orphaned)
+        .collect();
+    if !gone.is_empty() {
+        let bytes: u64 = gone.iter().map(|target| target.allocated_bytes).sum();
+        add(
+            "projects gone".to_string(),
+            format!(
+                "{} targets, {:.1} GiB, whose `Cargo.toml` is gone (a deleted crate, or one only \
+                 another branch has): `--lossy orphans --orphans-project-idle-days N`",
+                gone.len(),
+                bytes as f64 / GIB as f64
+            ),
+        );
+    }
     notes
 }
 
