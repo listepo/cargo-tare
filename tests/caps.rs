@@ -15,8 +15,8 @@
 
 use std::fs;
 
-use cargo_tare::sys;
-use common::{Fixture, ino, tare};
+use common::{Fixture, dunnage, ino};
+use dunnage::sys;
 
 mod common;
 
@@ -34,7 +34,7 @@ fn plant_twins(fixture: &Fixture) -> (std::path::PathBuf, std::path::PathBuf) {
 fn run(fixture: &Fixture, pass: &str) -> serde_json::Value {
     let config_home = fixture.root.join("config-home");
     fs::create_dir_all(&config_home).unwrap();
-    let out = tare(&config_home)
+    let out = dunnage(&config_home)
         .args(["run", "--pass", pass, "--min-age", "0", "--json", "--index"])
         .arg(fixture.root.join("index.bin"))
         .arg(&fixture.root)
@@ -115,7 +115,7 @@ fn status_names_what_the_filesystem_cannot_do() {
     let config_home = fixture.root.join("config-home");
     fs::create_dir_all(&config_home).unwrap();
 
-    let out = tare(&config_home)
+    let out = dunnage(&config_home)
         .arg("status")
         .arg(&fixture.root)
         .output()

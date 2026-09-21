@@ -15,7 +15,7 @@ pub const HASH_BYTES: usize = 32;
 pub type Hash = [u8; HASH_BYTES];
 
 /// File format: magic, then fixed-size little-endian records. Bump the digit on any change.
-const MAGIC: &[u8] = b"TAREIDX1";
+const MAGIC: &[u8] = b"DUNIDX01";
 const U64_BYTES: usize = 8;
 const U32_BYTES: usize = 4;
 /// dev, ino, size, mtime seconds (u64 each), mtime nanoseconds (u32), hash, shared (u8).

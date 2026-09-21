@@ -8,7 +8,7 @@ use predicates::str::contains;
 use tempfile::TempDir;
 
 mod common;
-use common::{fake_target, tare};
+use common::{dunnage, fake_target};
 
 const EXIT_FAILURE: i32 = 1;
 const EXIT_BUSY: i32 = 2;
@@ -20,11 +20,11 @@ fn root() -> (TempDir, PathBuf) {
     (tmp, root)
 }
 
-/// Writes `body` to `<root>/config-home/cargo-tare/config.toml` and returns the config home.
+/// Writes `body` to `<root>/config-home/dunnage/config.toml` and returns the config home.
 fn config_home(root: &Path, body: &str) -> PathBuf {
     let home = root.join("config-home");
-    fs::create_dir_all(home.join("cargo-tare")).unwrap();
-    fs::write(home.join("cargo-tare/config.toml"), body).unwrap();
+    fs::create_dir_all(home.join("dunnage")).unwrap();
+    fs::write(home.join("dunnage/config.toml"), body).unwrap();
     home
 }
 
@@ -43,7 +43,7 @@ fn the_file_supplies_the_roots_and_the_lossy_pass() {
     let idle = fake_target(&root, "idle", 64, IDLE_DAYS + 1);
     let home = config_home(&root, &evicting(&root));
 
-    tare(&home)
+    dunnage(&home)
         .args(["run", "--index"])
         .arg(root.join("index.bin"))
         .assert()
@@ -59,7 +59,7 @@ fn a_flag_wins_over_the_file() {
     let idle = fake_target(&root, "idle", 64, IDLE_DAYS + 1);
     let home = config_home(&root, &evicting(&root));
 
-    tare(&home)
+    dunnage(&home)
         .args(["run", "--evict-idle-days", "999", "--index"])
         .arg(root.join("index.bin"))
         .assert()
@@ -86,10 +86,10 @@ fn ab_a_skipped_family_is_left_alone() {
         evicting(&control),
         family.display()
     );
-    fs::write(homes[0].join("cargo-tare/config.toml"), skipping).unwrap();
+    fs::write(homes[0].join("dunnage/config.toml"), skipping).unwrap();
 
     for (home, root) in homes.iter().zip([&control, &treatment]) {
-        tare(home)
+        dunnage(home)
             .args(["run", "--index"])
             .arg(root.join("index.bin"))
             .assert()
@@ -106,7 +106,7 @@ fn a_broken_file_names_itself_and_the_key() {
     fake_target(&root, "p", 64, 0);
     let home = config_home(&root, "min-aeg = 60\n");
 
-    tare(&home)
+    dunnage(&home)
         .args(["run", "--index"])
         .arg(root.join("index.bin"))
         .arg(&root)
@@ -121,7 +121,7 @@ fn a_file_named_on_the_command_line_must_exist() {
     let (_tmp, root) = root();
     let home = config_home(&root, "");
 
-    tare(&home)
+    dunnage(&home)
         .args(["run", "--config"])
         .arg(root.join("nowhere.toml"))
         .arg(&root)
@@ -136,7 +136,7 @@ fn the_json_report_is_machine_readable() {
     let idle = fake_target(&root, "idle", 64, IDLE_DAYS + 1);
     let home = config_home(&root, &evicting(&root));
 
-    let out = tare(&home)
+    let out = dunnage(&home)
         .args(["run", "--json", "--dry-run", "--index"])
         .arg(root.join("index.bin"))
         .output()
@@ -170,7 +170,7 @@ fn a_busy_profile_leaves_its_own_exit_code() {
         .unwrap();
     build.lock().unwrap();
 
-    tare(&home)
+    dunnage(&home)
         .args(["run", "--index"])
         .arg(root.join("index.bin"))
         .assert()

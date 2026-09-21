@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
 
-use cargo_tare::engine::{self, Action, Locks, Options, Pass, Replace, Report, Share, Skip};
-use cargo_tare::model::{self, CARGO_LOCK_FILE, Profile, TMP_PREFIX};
+use dunnage::engine::{self, Action, Locks, Options, Pass, Replace, Report, Share, Skip};
+use dunnage::model::{self, CARGO_LOCK_FILE, Profile, TMP_PREFIX};
 use tempfile::TempDir;
 
 mod common;

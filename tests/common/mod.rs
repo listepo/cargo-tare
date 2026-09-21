@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
-use cargo_tare::engine::Report;
-use cargo_tare::model::{self, CARGO_LOCK_FILE};
+use dunnage::engine::Report;
+use dunnage::model::{self, CARGO_LOCK_FILE};
 use tempfile::TempDir;
 
 const CARGO_TAG: &str = "Signature: 8a477f597d28d172789f06886806bc55\n\
@@ -22,7 +22,7 @@ const KIB: usize = 1024;
 pub const POLL: Duration = Duration::from_millis(20);
 const LOCK_RACE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Read by the fixture's build script and not declared to cargo, so it never makes a unit stale.
-pub const BUILD_SLEEP_ENV: &str = "TARE_FIXTURE_BUILD_SLEEP_SECS";
+pub const BUILD_SLEEP_ENV: &str = "DUNNAGE_FIXTURE_BUILD_SLEEP_SECS";
 /// Name of the fixture's binary inside a profile dir.
 pub const BIN: &str = "fx";
 
@@ -38,9 +38,9 @@ pub const BIN: &str = "fx";
 /// if !common::filesystem_can(|caps| caps.clone, "dedupe") { return; }
 /// ```
 #[must_use]
-pub fn filesystem_can(has: fn(&cargo_tare::sys::Caps) -> bool, what: &str) -> bool {
+pub fn filesystem_can(has: fn(&dunnage::sys::Caps) -> bool, what: &str) -> bool {
     let dir = std::env::temp_dir();
-    if has(&cargo_tare::sys::caps(&dir)) {
+    if has(&dunnage::sys::caps(&dir)) {
         return true;
     }
     eprintln!(
@@ -66,7 +66,7 @@ const FILES: &[(&str, &str)] = &[
         "use std::{env, fs, path::Path, thread, time::Duration};\n\
          fn main() {\n\
              println!(\"cargo::rerun-if-changed=build.rs\");\n\
-             if let Ok(secs) = env::var(\"TARE_FIXTURE_BUILD_SLEEP_SECS\") {\n\
+             if let Ok(secs) = env::var(\"DUNNAGE_FIXTURE_BUILD_SLEEP_SECS\") {\n\
                  thread::sleep(Duration::from_secs(secs.parse().unwrap()));\n\
              }\n\
              let out = Path::new(&env::var(\"OUT_DIR\").unwrap()).join(\"generated.rs\");\n\
@@ -199,9 +199,9 @@ pub fn stale_units_at(ws: &Path, target: &Path) -> Vec<String> {
 
 /// The binary under test, with a config home of its own: a test must never read, or depend on,
 /// the configuration of the machine it runs on.
-pub fn tare(config_home: &Path) -> assert_cmd::Command {
-    let mut cmd = assert_cmd::Command::new(env!("CARGO_BIN_EXE_cargo-tare"));
-    cmd.arg("tare").env("XDG_CONFIG_HOME", config_home);
+pub fn dunnage(config_home: &Path) -> assert_cmd::Command {
+    let mut cmd = assert_cmd::Command::new(env!("CARGO_BIN_EXE_dunnage"));
+    cmd.env("XDG_CONFIG_HOME", config_home);
     cmd
 }
 

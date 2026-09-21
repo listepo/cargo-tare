@@ -145,26 +145,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cargo-tare"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "applesauce",
- "assert_cmd",
- "clap",
- "predicates",
- "rayon",
- "rustix",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "toml",
- "trycmd",
- "walkdir",
-]
-
-[[package]]
 name = "cc"
 version = "1.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -351,6 +331,26 @@ name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+
+[[package]]
+name = "dunnage"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "applesauce",
+ "assert_cmd",
+ "clap",
+ "predicates",
+ "rayon",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "toml",
+ "trycmd",
+ "walkdir",
+]
 
 [[package]]
 name = "either"

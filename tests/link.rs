@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
 
-use cargo_tare::sys;
-use common::{Fixture, ino, tare};
+use common::{Fixture, dunnage, ino};
+use dunnage::sys;
 
 mod common;
 
@@ -59,7 +59,7 @@ fn run_home(home: &Path, extra: &[&str]) -> serde_json::Value {
     let parent = home.parent().unwrap();
     let config_home = parent.join("config-home");
     fs::create_dir_all(&config_home).unwrap();
-    let out = tare(&config_home)
+    let out = dunnage(&config_home)
         .args(["run", "--pass", "dedupe", "--cargo-home"])
         .arg(home)
         .args(extra)
@@ -79,7 +79,7 @@ fn run_home(home: &Path, extra: &[&str]) -> serde_json::Value {
 fn run_target(fixture: &Fixture, extra: &[&str]) {
     let config_home = fixture.root.join("config-home");
     fs::create_dir_all(&config_home).unwrap();
-    let out = tare(&config_home)
+    let out = dunnage(&config_home)
         .args(["run", "--pass", "dedupe"])
         .args(extra)
         .args(["--min-age", "0", "--index"])

@@ -8,18 +8,18 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime};
 
-use cargo_tare::compress::{Compress, DEFAULT_MIN_AGE, DEFAULT_MIN_SIZE};
-use cargo_tare::dedupe::Dedupe;
-use cargo_tare::engine::{self, Locks, Options, PassReport, Skip};
-use cargo_tare::index::{HASH_BYTES, HashIndex};
-use cargo_tare::model::{CARGO_LOCK_FILE, Stamp, TMP_PREFIX};
-use cargo_tare::sys;
+use dunnage::compress::{Compress, DEFAULT_MIN_AGE, DEFAULT_MIN_SIZE};
+use dunnage::dedupe::Dedupe;
+use dunnage::engine::{self, Locks, Options, PassReport, Skip};
+use dunnage::index::{HASH_BYTES, HashIndex};
+use dunnage::model::{CARGO_LOCK_FILE, Stamp, TMP_PREFIX};
+use dunnage::sys;
 use tempfile::TempDir;
 
 mod common;
 use common::{Fixture, allocated_bytes, ino, run_unbusy};
 
-const LINE: &[u8] = b"cargo-tare: a line of text that compresses very well\n";
+const LINE: &[u8] = b"dunnage: a line of text that compresses very well\n";
 const BIG: usize = 8 * DEFAULT_MIN_SIZE as usize;
 /// Real targets hold rlibs of this size; T2 saw a 119 MB file left uncompressed.
 const HUGE: usize = 130 << 20;
@@ -83,7 +83,7 @@ struct Outcome {
     notes: Vec<String>,
 }
 
-/// Compress, then dedupe, the way `cargo tare run` registers them.
+/// Compress, then dedupe, the way `dunnage run` registers them.
 fn run(dirs: &[PathBuf], index: &RefCell<HashIndex>, min_age: Duration) -> Outcome {
     let (mut compress, mut dedupe) = (Compress::new(index), Dedupe::new(index));
     compress.min_age = min_age;

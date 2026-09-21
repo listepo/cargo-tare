@@ -1,24 +1,29 @@
-//! `cargo tare seed` on a real `git worktree` of the cargo fixture. Everything is in temp dirs.
+//! `dunnage seed` on a real `git worktree` of the cargo fixture. Everything is in temp dirs.
 
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use cargo_tare::index::HashIndex;
-use cargo_tare::model::CARGO_LOCK_FILE;
-use cargo_tare::seed;
+use dunnage::index::HashIndex;
+use dunnage::model::CARGO_LOCK_FILE;
+use dunnage::seed;
 use predicates::str::contains;
 use tempfile::TempDir;
 
 mod common;
-use common::{Fixture, allocated_bytes, stale_units_at, tare};
+use common::{Fixture, allocated_bytes, dunnage, stale_units_at};
 
 const EXIT_FAILURE: i32 = 1;
 
 fn git(dir: &Path, args: &[&str]) {
     let status = Command::new("git")
         .current_dir(dir)
-        .args(["-c", "user.name=tare", "-c", "user.email=tare@invalid"])
+        .args([
+            "-c",
+            "user.name=dunnage",
+            "-c",
+            "user.email=dunnage@invalid",
+        ])
         .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -160,7 +165,7 @@ fn the_source_is_chosen_inside_the_family_and_its_copies_are_shared_in_the_index
     for entry in fs::read_dir(&rlib).unwrap() {
         let path = entry.unwrap().path();
         if path.is_file() {
-            let stamp = cargo_tare::model::Stamp::read(&path).unwrap();
+            let stamp = dunnage::model::Stamp::read(&path).unwrap();
             index.put(&stamp, [7; 32], false);
             source_stamps.push(stamp);
         }
@@ -176,7 +181,7 @@ fn the_source_is_chosen_inside_the_family_and_its_copies_are_shared_in_the_index
     for entry in fs::read_dir(family.seeded().join("debug/deps")).unwrap() {
         let path = entry.unwrap().path();
         if path.is_file() {
-            let stamp = cargo_tare::model::Stamp::read(&path).unwrap();
+            let stamp = dunnage::model::Stamp::read(&path).unwrap();
             let entry = index.get(&stamp).expect("the copy is in the index");
             assert!(entry.shared, "and so is the copy");
             assert_eq!(entry.hash, [7; 32]);
@@ -222,7 +227,7 @@ fn cli_seeds_from_a_named_checkout_and_says_what_it_did() {
     let home = family.worktree_ws.join("config-home");
     let index = family.worktree_ws.join("index.bin");
 
-    tare(&home)
+    dunnage(&home)
         .args(["seed", "--dry-run", "--from"])
         .arg(family.fixture.root.join("ws"))
         .arg("--index")
@@ -233,7 +238,7 @@ fn cli_seeds_from_a_named_checkout_and_says_what_it_did() {
         .stdout(contains("would copy"));
     assert!(!family.seeded().exists());
 
-    tare(&home)
+    dunnage(&home)
         .args(["seed", "--index"])
         .arg(&index)
         .arg(&family.worktree_ws)
@@ -242,7 +247,7 @@ fn cli_seeds_from_a_named_checkout_and_says_what_it_did() {
         .stdout(contains("copied"));
     assert!(family.seeded().join("CACHEDIR.TAG").is_file());
 
-    tare(&home)
+    dunnage(&home)
         .args(["seed", "--index"])
         .arg(&index)
         .arg(&family.worktree_ws)

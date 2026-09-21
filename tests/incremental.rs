@@ -5,15 +5,15 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use cargo_tare::engine::{self, Locks, Options, Report};
-use cargo_tare::incremental::{self, Incremental};
-use cargo_tare::inventory;
-use cargo_tare::model::CARGO_LOCK_FILE;
+use dunnage::engine::{self, Locks, Options, Report};
+use dunnage::incremental::{self, Incremental};
+use dunnage::inventory;
+use dunnage::model::CARGO_LOCK_FILE;
 use predicates::str::contains;
 use tempfile::TempDir;
 
 mod common;
-use common::{Fixture, allocated_bytes, fake_target, run_unbusy, tare as tare_in};
+use common::{Fixture, allocated_bytes, dunnage as dunnage_in, fake_target, run_unbusy};
 
 const KIB: usize = 1024;
 const CACHE_KIB: usize = 256;
@@ -206,20 +206,20 @@ fn cli_drops_the_cache_only_when_asked_with_a_limit() {
     let (_tmp, root) = root();
     let idle = idle_target(&root, "idle", IDLE_DAYS + 1);
     let index = root.join("index.bin");
-    let tare = || {
-        let mut cmd = tare_in(&root);
+    let dunnage = || {
+        let mut cmd = dunnage_in(&root);
         cmd.args(["run", "--pass", "incremental", "--index"]);
         cmd.arg(&index);
         cmd
     };
 
-    tare()
+    dunnage()
         .args(["--lossy", "incremental"])
         .arg(&root)
         .assert()
         .code(EXIT_FAILURE)
         .stderr(contains("need each other"));
-    tare()
+    dunnage()
         .args(["--incremental-idle-days", "7"])
         .arg(&root)
         .assert()
@@ -227,7 +227,7 @@ fn cli_drops_the_cache_only_when_asked_with_a_limit() {
         .stderr(contains("need each other"));
     assert!(idle.join("incremental").exists());
 
-    tare()
+    dunnage()
         .args([
             "--dry-run",
             "--lossy",
@@ -242,7 +242,7 @@ fn cli_drops_the_cache_only_when_asked_with_a_limit() {
         .stdout(contains("no build for 8 days"));
     assert!(idle.join("incremental").exists());
 
-    tare()
+    dunnage()
         .args(["--lossy", "incremental", "--incremental-idle-days", "7"])
         .arg(&root)
         .assert()

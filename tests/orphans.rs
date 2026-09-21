@@ -5,15 +5,15 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Command as Process, Stdio};
 
-use cargo_tare::engine::{self, Locks, Options, Pass, Report};
-use cargo_tare::inventory;
-use cargo_tare::model::CARGO_LOCK_FILE;
-use cargo_tare::orphans::{self, Orphan, Orphans};
+use dunnage::engine::{self, Locks, Options, Pass, Report};
+use dunnage::inventory;
+use dunnage::model::CARGO_LOCK_FILE;
+use dunnage::orphans::{self, Orphan, Orphans};
 use predicates::str::contains;
 use tempfile::TempDir;
 
 mod common;
-use common::{allocated_bytes, fake_target, run_unbusy, tare as tare_in};
+use common::{allocated_bytes, dunnage as dunnage_in, fake_target, run_unbusy};
 
 const KIB: usize = 1024;
 const PROFILE_KIB: usize = 64;
@@ -27,7 +27,12 @@ fn root() -> (TempDir, PathBuf) {
 fn git(dir: &Path, args: &[&str]) {
     let status = Process::new("git")
         .current_dir(dir)
-        .args(["-c", "user.name=tare", "-c", "user.email=tare@invalid"])
+        .args([
+            "-c",
+            "user.name=dunnage",
+            "-c",
+            "user.email=dunnage@invalid",
+        ])
         .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -245,17 +250,17 @@ fn cli_removes_an_orphan_only_when_asked() {
     let (_repo, wt) = family(&root);
     orphan(&root);
     let index = root.join("index.bin");
-    let tare = || {
-        let mut cmd = tare_in(&root);
+    let dunnage = || {
+        let mut cmd = dunnage_in(&root);
         cmd.args(["run", "--pass", "orphans", "--index"]);
         cmd.arg(&index);
         cmd
     };
 
-    tare().arg(&root).assert().success();
+    dunnage().arg(&root).assert().success();
     assert!(wt.exists(), "a run that does not name the pass keeps it");
 
-    tare()
+    dunnage()
         .args(["--dry-run", "--lossy", "orphans"])
         .arg(&root)
         .assert()
@@ -264,7 +269,7 @@ fn cli_removes_an_orphan_only_when_asked() {
         .stdout(contains("worktree record"));
     assert!(wt.exists());
 
-    tare()
+    dunnage()
         .args(["--lossy", "orphans"])
         .arg(&root)
         .assert()

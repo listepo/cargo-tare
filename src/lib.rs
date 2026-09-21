@@ -1,4 +1,4 @@
-//! cargo-tare: shrink Cargo target directories without slowing builds. See `DESIGN.md`.
+//! dunnage: shrink Cargo target directories without slowing builds. See `DESIGN.md`.
 
 pub mod advise;
 pub mod cargo_home;

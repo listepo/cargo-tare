@@ -1,4 +1,4 @@
-//! `cargo tare advise` on fake targets in temp dirs. The command reads files and prints; these
+//! `dunnage advise` on fake targets in temp dirs. The command reads files and prints; these
 //! tests also check that it writes nothing at all.
 
 use std::fs;
@@ -8,7 +8,7 @@ use predicates::str::contains;
 use tempfile::TempDir;
 
 mod common;
-use common::{fake_target, tare};
+use common::{dunnage, fake_target};
 
 /// A manifest with nothing tuned, which is what most projects have.
 const PLAIN: &str = "[package]\nname = \"p\"\nversion = \"0.1.0\"\n";
@@ -43,7 +43,7 @@ fn project(root: &Path, manifest: &str, config: Option<&str>) -> PathBuf {
 fn advise(root: &Path) -> assert_cmd::Command {
     let home = root.join("config-home");
     fs::create_dir_all(&home).unwrap();
-    let mut cmd = tare(&home);
+    let mut cmd = dunnage(&home);
     cmd.env("CARGO_HOME", root.join("cargo-home"))
         .arg("advise")
         .arg(root);

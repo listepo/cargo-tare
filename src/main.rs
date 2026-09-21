@@ -5,23 +5,23 @@ use std::process::ExitCode;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, ensure};
-use cargo_tare::advise::{self, Kind};
-use cargo_tare::cargo_home;
-use cargo_tare::compress::{self, Compress};
-use cargo_tare::config::{self, Config};
-use cargo_tare::dedupe::{self, Dedupe};
-use cargo_tare::doc::{self, Doc, Docs};
-use cargo_tare::engine::{self, Locks, Options, Pass};
-use cargo_tare::evict::{self, Evict, Limits};
-use cargo_tare::incremental::{self, Incremental};
-use cargo_tare::index::HashIndex;
-use cargo_tare::inventory::{self, Inventory, ProfileInfo, Target};
-use cargo_tare::orphans::{self, Orphan, Orphans};
-use cargo_tare::seed;
 use clap::{Parser, Subcommand};
+use dunnage::advise::{self, Kind};
+use dunnage::cargo_home;
+use dunnage::compress::{self, Compress};
+use dunnage::config::{self, Config};
+use dunnage::dedupe::{self, Dedupe};
+use dunnage::doc::{self, Doc, Docs};
+use dunnage::engine::{self, Locks, Options, Pass};
+use dunnage::evict::{self, Evict, Limits};
+use dunnage::incremental::{self, Incremental};
+use dunnage::index::HashIndex;
+use dunnage::inventory::{self, Inventory, ProfileInfo, Target};
+use dunnage::orphans::{self, Orphan, Orphans};
+use dunnage::seed;
 
 /// Relative to `$HOME`. The digit follows the index file format.
-const DEFAULT_INDEX: &str = ".cache/cargo-tare/hashes-v1.bin";
+const DEFAULT_INDEX: &str = ".cache/dunnage/hashes-v1.bin";
 const BYTES_PER_GIB: f64 = (1u64 << 30) as f64;
 /// Exit code when a profile dir was skipped because a build holds its lock.
 const BUSY_EXIT: u8 = 2;
@@ -40,19 +40,23 @@ const PASSES: [&str; 6] = [
 ];
 const SECS_PER_DAY: u64 = 24 * 60 * 60;
 
-/// Cargo runs external subcommands as `cargo-tare tare <args>`.
-#[derive(Parser)]
-#[command(name = "cargo", bin_name = "cargo")]
-enum Cargo {
-    Tare(Tare),
-}
-
 /// Shrink Cargo target directories without slowing builds
-#[derive(clap::Args)]
-#[command(version)]
-struct Tare {
+#[derive(Parser)]
+#[command(name = "dunnage", version)]
+struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+/// The arguments, without the subcommand name cargo puts first: a `cargo-dunnage` link to this
+/// binary is run by `cargo dunnage <args>` as `cargo-dunnage dunnage <args>`. No subcommand of
+/// ours is called `dunnage`, so dropping it cannot take anything else away.
+fn args() -> Vec<std::ffi::OsString> {
+    let mut args: Vec<_> = std::env::args_os().collect();
+    if args.get(1).is_some_and(|first| first == "dunnage") {
+        args.remove(1);
+    }
+    args
 }
 
 #[derive(Subcommand)]
@@ -91,7 +95,7 @@ enum Cmd {
         /// Report what would be copied without touching anything
         #[arg(long)]
         dry_run: bool,
-        /// Content-hash cache [default: ~/.cache/cargo-tare/hashes-v1.bin]
+        /// Content-hash cache [default: ~/.cache/dunnage/hashes-v1.bin]
         #[arg(long, value_name = "FILE")]
         index: Option<PathBuf>,
         /// The checkout to seed [default: .]
@@ -146,10 +150,10 @@ struct RunArgs {
     /// sharing it. Off by default, and the cargo home's sources are shared without it
     #[arg(long)]
     link_artifacts: bool,
-    /// Content-hash cache [default: ~/.cache/cargo-tare/hashes-v1.bin]
+    /// Content-hash cache [default: ~/.cache/dunnage/hashes-v1.bin]
     #[arg(long, value_name = "FILE")]
     index: Option<PathBuf>,
-    /// Configuration file [default: $XDG_CONFIG_HOME/cargo-tare/config.toml]
+    /// Configuration file [default: $XDG_CONFIG_HOME/dunnage/config.toml]
     #[arg(long, value_name = "FILE")]
     config: Option<PathBuf>,
     /// Print the report as JSON instead of a table
@@ -161,7 +165,7 @@ struct RunArgs {
 }
 
 fn main() -> ExitCode {
-    let Cargo::Tare(Tare { cmd }) = Cargo::parse();
+    let Cli { cmd } = Cli::parse_from(args());
     let done = match cmd {
         Cmd::Status {
             json,
@@ -213,7 +217,7 @@ fn gib(bytes: u64) -> String {
 
 /// What the filesystem under a target cannot do, in the words of the passes it silences.
 /// `None` when it can do everything, which needs no line.
-fn missing_caps(caps: &cargo_tare::sys::Caps) -> Option<&'static str> {
+fn missing_caps(caps: &dunnage::sys::Caps) -> Option<&'static str> {
     match (caps.clone, caps.compress) {
         (true, true) => None,
         (true, false) => {
@@ -304,7 +308,7 @@ fn status(json: bool, home: Option<PathBuf>, mut roots: Vec<PathBuf>) -> Result<
     Ok(())
 }
 
-/// `cargo tare advise`: which files to read and how to print what they say. The checks live in
+/// `dunnage advise`: which files to read and how to print what they say. The checks live in
 /// `advise.rs`; this reads nothing but text and writes nothing at all.
 fn advise(json: bool, mut roots: Vec<PathBuf>) -> Result<()> {
     if roots.is_empty() {
@@ -407,7 +411,7 @@ fn index_path(flag: Option<PathBuf>) -> Result<PathBuf> {
     }
 }
 
-/// `cargo tare seed`: the whole command, since the copy itself lives in `seed.rs`.
+/// `dunnage seed`: the whole command, since the copy itself lives in `seed.rs`.
 fn seed_into(
     from: Option<PathBuf>,
     dry_run: bool,

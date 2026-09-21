@@ -1,5 +1,5 @@
 ```
-$ cargo-tare tare --version
-cargo-tare [..]
+$ dunnage --version
+dunnage [..]
 
 ```

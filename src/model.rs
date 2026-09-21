@@ -13,7 +13,7 @@ use crate::sys;
 /// Cargo's per-profile lock file; its presence marks a profile dir.
 pub const CARGO_LOCK_FILE: &str = ".cargo-lock";
 /// Prefix of our temp files. Leftovers of a crashed run are removed by the next one.
-pub const TMP_PREFIX: &str = ".tare-tmp-";
+pub const TMP_PREFIX: &str = ".dunnage-tmp-";
 
 const CACHEDIR_TAG: &str = "CACHEDIR.TAG";
 /// Gradle, uv and others write the same tag file; only cargo writes this sentence.

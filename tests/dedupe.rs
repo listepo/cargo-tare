@@ -6,10 +6,10 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use cargo_tare::dedupe::{DEFAULT_MIN_SIZE, Dedupe};
-use cargo_tare::engine::{self, Locks, Options, PassReport};
-use cargo_tare::index::HashIndex;
-use cargo_tare::model::CARGO_LOCK_FILE;
+use dunnage::dedupe::{DEFAULT_MIN_SIZE, Dedupe};
+use dunnage::engine::{self, Locks, Options, PassReport};
+use dunnage::index::HashIndex;
+use dunnage::model::CARGO_LOCK_FILE;
 use tempfile::TempDir;
 
 mod common;

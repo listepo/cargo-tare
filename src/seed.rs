@@ -1,4 +1,4 @@
-//! `cargo tare seed`: give a fresh checkout a target dir cloned from a sibling's. Where the
+//! `dunnage seed`: give a fresh checkout a target dir cloned from a sibling's. Where the
 //! filesystem shares blocks (APFS, btrfs, XFS) the copy costs nothing until one side is
 //! rewritten, and the new worktree starts with a warm target for free. Where it does not, the
 //! copy is a real one: it still saves the build, it no longer saves the disk.
