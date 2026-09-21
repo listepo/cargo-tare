@@ -93,6 +93,9 @@ pub struct Request {
     pub link_artifacts: bool,
     /// Families to leave alone, by their dir.
     pub skip_families: Vec<PathBuf>,
+    /// Repeat the passes on a group while a round still applies anything, under the same
+    /// locks, so one visit leaves nothing for the next.
+    pub until_settled: bool,
 }
 
 impl Request {
@@ -340,6 +343,7 @@ impl Session {
         let opts = Options {
             dry_run,
             lossy: request.lossy.clone(),
+            until_settled: request.until_settled,
         };
         // `cargo_home` is a run of its own: it needs no target and no root.
         let only_home = request.roots.is_empty() && request.cargo_home.is_some();

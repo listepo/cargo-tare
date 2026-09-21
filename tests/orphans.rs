@@ -74,6 +74,7 @@ fn named() -> Options {
     Options {
         dry_run: false,
         lossy: vec![orphans::NAME.to_string()],
+        ..Options::default()
     }
 }
 

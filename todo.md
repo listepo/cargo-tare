@@ -1,6 +1,5 @@
 - T24. A place where the Windows tests run
 - T21. Windows: NTFS compression and ReFS block cloning
-- T25. `run` until nothing is left to do
 - T26. `dunnage worktree add`
 - T28. Adapter boundary: what is cargo and what is not
 - T29. A safety tier for build systems without a build lock

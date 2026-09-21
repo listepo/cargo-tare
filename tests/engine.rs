@@ -472,3 +472,94 @@ fn a_stop_raised_mid_run_leaves_every_file_old_or_new() {
         .count();
     assert_eq!(leftovers, 0, "no temp file is left behind");
 }
+
+/// Whether `a` and `b` were scanned as one inode.
+fn one_inode(profiles: &[Profile], a: &str, b: &str) -> bool {
+    profiles.iter().flat_map(|p| &p.inodes).any(|inode| {
+        let named = |name: &str| inode.paths.iter().any(|p| p.file_name().unwrap() == name);
+        named(a) && named(b)
+    })
+}
+
+/// Links `second` to `canon` only once `member` is linked to it: work the second pass of a
+/// round makes for the first pass of the next.
+fn chained_passes() -> (impl Pass, impl Pass) {
+    let after = FnPass {
+        lossy: false,
+        plan: |p: &[Profile]| {
+            if one_inode(p, "canon", "member") && !one_inode(p, "canon", "second") {
+                share_by_name(p, "canon", "second", Share::Link)
+            } else {
+                Vec::new()
+            }
+        },
+    };
+    let first = FnPass {
+        lossy: false,
+        plan: |p: &[Profile]| {
+            if one_inode(p, "canon", "member") {
+                Vec::new()
+            } else {
+                share_by_name(p, "canon", "member", Share::Link)
+            }
+        },
+    };
+    (after, first)
+}
+
+/// A profile dir with three equal files of one mode, each its own inode.
+fn three_equal_files() -> (TempDir, PathBuf) {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().canonicalize().unwrap().join("debug");
+    fs::create_dir_all(&dir).unwrap();
+    File::create(dir.join(CARGO_LOCK_FILE)).unwrap();
+    for name in ["canon", "member", "second"] {
+        fs::write(dir.join(name), CONTENT).unwrap();
+    }
+    (tmp, dir)
+}
+
+#[test]
+fn until_settled_runs_again_while_a_round_applies_anything() {
+    let (_tmp, dir) = three_equal_files();
+    let (after, first) = chained_passes();
+    let opts = Options {
+        until_settled: true,
+        ..Options::default()
+    };
+
+    let report = run(&dir, &[&after, &first], &opts);
+
+    assert_eq!(ino(&dir.join("second")), ino(&dir.join("canon")));
+    assert_eq!(report.rounds, 3, "two that apply, one that finds nothing");
+    let applied: Vec<_> = report
+        .passes
+        .iter()
+        .map(|p| (p.planned, p.applied))
+        .collect();
+    assert_eq!(applied, [(1, 1), (1, 1)], "summed over the rounds");
+}
+
+#[test]
+fn one_round_without_until_settled_and_on_a_dry_run() {
+    for opts in [
+        Options::default(),
+        Options {
+            until_settled: true,
+            dry_run: true,
+            ..Options::default()
+        },
+    ] {
+        let (_tmp, dir) = three_equal_files();
+        let (after, first) = chained_passes();
+
+        let report = run(&dir, &[&after, &first], &opts);
+
+        assert_eq!(report.rounds, 1, "{opts:?}");
+        assert_ne!(
+            ino(&dir.join("second")),
+            ino(&dir.join("canon")),
+            "{opts:?}"
+        );
+    }
+}

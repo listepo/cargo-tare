@@ -120,6 +120,10 @@ Right after both passes, with nothing rebuilt in between, running the tool again
 pipeline run does not reach a fixed point. Nothing is lost by it — the next scheduled run picks
 them up — but a `run` that loops until it stops finding work would finish the job in one go.
 
+Since T25 `run` does loop: it repeats the passes on a group until a round applies nothing. Not
+measured again on this workspace yet; the fixture in `tests/settle.rs` is too small to show the
+second round at all.
+
 ## Across families
 
 `--across-families` compares every target under the roots instead of one repository at a time.

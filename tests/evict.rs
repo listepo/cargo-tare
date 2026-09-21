@@ -33,6 +33,7 @@ fn named() -> Options {
     Options {
         dry_run: false,
         lossy: vec![evict::NAME.to_string()],
+        ..Options::default()
     }
 }
 

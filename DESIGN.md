@@ -71,9 +71,14 @@ every choice are in `docs/research.md`.
 Ordering rule: delete first so lossless passes never hash or compress bytes that are about to
 disappear; lossless passes last so they see the final set of inodes.
 
-One run does not reach a fixed point: dedupe's clones are files compress never saw, so the next
-run finds them (46 actions on the benchmark workspace, `docs/bench.md`). Nothing is lost by it;
-a `run` that repeats until it finds nothing would finish in one go.
+One round of the passes does not always reach a fixed point: dedupe's clones are files compress
+never saw (46 actions for a second run on the benchmark workspace, `docs/bench.md`). So `run`
+repeats the rounds on a group, under the locks it already holds, until a round applies nothing
+(`Options::until_settled`, at most 8 rounds; the stop flag and the lock budget end it too). The
+test is "applied nothing", not "planned nothing": a group that is skipped for good — a file that
+will not compress, a hardlink from outside — is planned again by every round. Counts are summed
+over the rounds; a later round adds what it applied and what it skipped for the first time.
+`--dry-run` is one round, since it changes nothing a second one could see.
 
 ### Why one tool beats a chain of tools
 

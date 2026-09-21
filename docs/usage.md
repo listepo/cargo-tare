@@ -51,8 +51,9 @@ dunnage run ~/code                 # 4. do it
    debuginfo levels, a missing `strip`, ignored `[unstable]` keys — with the file each one
    belongs in.
 3. `run --dry-run` prints the full plan and touches nothing.
-4. `run` compresses and deduplicates. It deletes nothing, rebuilds nothing, and can be repeated
-   at any time; the second run is fast because content hashes are cached.
+4. `run` compresses and deduplicates, repeating both until nothing is left for them. It deletes
+   nothing, rebuilds nothing, and can be repeated at any time; a later run is fast because
+   content hashes are cached, and finds only what builds wrote since.
 
 Check the result with `dunnage status ~/code` again, and with `cargo build` in any of the
 projects: it must report nothing to recompile.
@@ -208,8 +209,6 @@ The family key is the git common dir that `status` prints for the family.
   `cargo watch`, or rust-analyzer's check. Run when the editor is idle, or schedule it at night.
 - **`du` shows no change on btrfs.** btrfs reports uncompressed sizes in `stat`; look at `df` for
   the volume or `compsize` for a directory.
-- **A run is followed by another run that still finds work.** Expected: clones made by `dedupe`
-  are new files `compress` has not seen yet. The second run settles it.
 - **Files a build just wrote are skipped.** Expected: `min-age` leaves anything younger than an
   hour alone, because the next build rewrites it anyway.
 - **Leftover `.dunnage-tmp-*` files.** A run was killed mid-replace. The original files are intact

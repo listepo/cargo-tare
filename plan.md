@@ -12,7 +12,6 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | --- | --- | --- | --- | --- | --- |
 | T24 | todo | P1 | 3 | 0% | |
 | T21 | todo | P2 | 5 | 0% | |
-| T25 | todo | P2 | 2 | 0% | |
 | T26 | todo | P2 | 2 | 0% | |
 | T28 | todo | P2 | 4 | 0% | |
 | T29 | todo | P2 | 4 | 0% | |
@@ -124,18 +123,6 @@ State: `just check` is green (128 tests run on macOS) and both cross targets com
 Suggested split if the creator wants it smaller: (a) test environment + item 2 — now T24,
 (b) identity and the signature change, (c) NTFS compression, (d) ReFS cloning, (e) paths and
 docs.
-
-### T25. `run` until nothing is left to do
-
-`docs/usage.md` has to tell users that a second run still finds work: clones made by `dedupe`
-are files `compress` never saw (46 actions on the benchmark workspace, `docs/bench.md`).
-`DESIGN.md` already names the cure — repeat until a round plans nothing. The locks are held
-once for all rounds, the report sums the rounds, `--dry-run` stays one round because it changes
-nothing a second round could see. Done: a test where one `run` leaves a second `run --dry-run`
-with an empty plan, the oracle green, and the troubleshooting entry gone from `docs/usage.md`.
-
-Lands on the session (T36) as `Request::until_settled`, so the daemon settles a unit in one
-visit exactly as the CLI does.
 
 ### T26. `dunnage worktree add`
 

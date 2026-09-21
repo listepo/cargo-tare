@@ -403,6 +403,7 @@ fn request(args: RunArgs, config: &Config) -> Request {
     request.cargo_home = home_flag(args.cargo_home);
     request.across_families |= args.across_families;
     request.link_artifacts = args.link_artifacts;
+    request.until_settled = true;
     if !args.roots.is_empty() {
         request.roots = args.roots;
     }

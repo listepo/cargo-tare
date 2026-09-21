@@ -17,6 +17,9 @@ use crate::sys::{self, COMPRESSED};
 /// Copies handed to [`Pass::compress`] at once: bounds the work a crash throws away and the
 /// time between checking a group and swapping its copy in.
 const COMPRESS_BATCH: usize = 256;
+/// Rounds one run makes at most with [`Options::until_settled`]: a pass that keeps finding
+/// work must not keep the locks forever.
+const MAX_ROUNDS: usize = 8;
 
 /// How a replacement gets its bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,6 +91,8 @@ pub trait Pass {
 pub struct Options {
     pub dry_run: bool,
     pub lossy: Vec<String>,
+    /// Run the passes again while a round applies anything; a dry run is always one round.
+    pub until_settled: bool,
 }
 
 /// Why a planned group was left alone.
@@ -127,6 +132,26 @@ pub struct PassReport {
 }
 
 impl PassReport {
+    /// A later round: it adds what it applied, and what it skipped or removed for the first
+    /// time. Planned counts only those, since a group skipped for good is planned every round.
+    fn absorb(&mut self, round: PassReport) {
+        let new_skips: Vec<_> = round
+            .skipped
+            .into_iter()
+            .filter(|(path, _)| !self.skipped.iter().any(|(seen, _)| seen == path))
+            .collect();
+        self.planned += round.applied + new_skips.len();
+        self.planned_bytes += round.freed_bytes;
+        self.applied += round.applied;
+        self.freed_bytes += round.freed_bytes;
+        self.skipped.extend(new_skips);
+        for removal in round.removals {
+            if !self.removals.iter().any(|(seen, _)| *seen == removal.0) {
+                self.removals.push(removal);
+            }
+        }
+    }
+
     fn skip(&mut self, member: &Inode, skip: Skip) {
         let path = member.paths.first().cloned().unwrap_or_default();
         self.skipped.push((path, skip));
@@ -141,6 +166,21 @@ pub struct Report {
     pub passes: Vec<PassReport>,
     /// Set when the run let go before its plan was done; the rest was never started.
     pub interrupted: Option<Interrupted>,
+    /// Rounds of every pass that ran; more than one only with [`Options::until_settled`].
+    pub rounds: usize,
+}
+
+impl Report {
+    /// Adds a round's pass reports to the ones before it, pass by pass.
+    fn absorb(&mut self, round: Vec<PassReport>) {
+        if self.passes.is_empty() {
+            self.passes = round;
+            return;
+        }
+        for (total, pass) in self.passes.iter_mut().zip(round) {
+            total.absorb(pass);
+        }
+    }
 }
 
 /// Why a run let go of its locks early.
@@ -291,93 +331,112 @@ pub fn run_with(
         }
     }
 
-    for pass in passes {
-        if pass.lossy() && !opts.lossy.iter().any(|name| name == pass.name()) {
-            continue;
-        }
-        let mut pass_report = PassReport {
-            name: pass.name(),
-            ..PassReport::default()
-        };
-        let mut removal_tried = false;
-        let mut to_compress = Vec::new();
-        for action in pass.plan(&profiles) {
-            if let Some(why) = interrupt.due() {
-                report.interrupted = Some(why);
-                break;
-            }
-            let bytes = match &action {
-                Action::Replace(replace) => replace.member.allocated,
-                Action::Compress(inode) => inode.allocated,
-                Action::Remove { dir, reason } => {
-                    pass_report.removals.push((dir.clone(), reason.clone()));
-                    profiles
-                        .iter()
-                        .filter(|profile| dir.starts_with(&profile.dir))
-                        .flat_map(|profile| &profile.inodes)
-                        // A link from outside survives the removal, so nothing is freed by it.
-                        .filter(|inode| inode.paths.iter().all(|path| path.starts_with(dir)))
-                        .map(|inode| inode.allocated)
-                        .sum()
-                }
-                Action::RemoveTarget {
-                    dir, reason, bytes, ..
-                } => {
-                    pass_report.removals.push((dir.clone(), reason.clone()));
-                    *bytes
-                }
-            };
-            pass_report.planned += 1;
-            pass_report.planned_bytes += bytes;
-            if opts.dry_run {
+    // Passes feed each other — dedupe's clones are files compress has not looked at — so a
+    // round can leave work for the next one. Every round runs under the locks taken above.
+    loop {
+        report.rounds += 1;
+        let mut round = Vec::new();
+        let mut progressed = false;
+        for pass in passes {
+            if pass.lossy() && !opts.lossy.iter().any(|name| name == pass.name()) {
                 continue;
             }
-            match action {
-                Action::Compress(inode) => to_compress.push(inode),
-                Action::Remove { dir, .. } => {
-                    removal_tried = true;
-                    // A locked profile dir or something inside it, never one around it.
-                    let unlocked = !locked.iter().any(|held| dir.starts_with(held));
-                    remove(dir, unlocked, bytes, &mut locked, &mut pass_report);
+            let mut pass_report = PassReport {
+                name: pass.name(),
+                ..PassReport::default()
+            };
+            let mut removal_tried = false;
+            let mut to_compress = Vec::new();
+            for action in pass.plan(&profiles) {
+                if let Some(why) = interrupt.due() {
+                    report.interrupted = Some(why);
+                    break;
                 }
-                Action::RemoveTarget { target, dir, .. } => {
-                    removal_tried = true;
-                    // Ours only if the target holds still: we have a lock inside it, nothing in
-                    // it is being built, and what goes is inside it.
-                    let holds_lock = locked.iter().any(|held| held.starts_with(&target));
-                    let building = report.busy.iter().any(|busy| busy.starts_with(&target));
-                    let unlocked = !holds_lock || building || !dir.starts_with(&target);
-                    remove(dir, unlocked, bytes, &mut locked, &mut pass_report);
-                }
-                Action::Replace(replace) => match apply_replace(&replace, &locked) {
-                    None => {
-                        pass_report.applied += 1;
-                        pass_report.freed_bytes += replace.member.allocated;
-                        // Under the lock nobody else can have touched the new inode yet.
-                        pass.replaced(&replace, &Stamp::read(&replace.member.paths[0])?);
+                let bytes = match &action {
+                    Action::Replace(replace) => replace.member.allocated,
+                    Action::Compress(inode) => inode.allocated,
+                    Action::Remove { dir, reason } => {
+                        pass_report.removals.push((dir.clone(), reason.clone()));
+                        profiles
+                            .iter()
+                            .filter(|profile| dir.starts_with(&profile.dir))
+                            .flat_map(|profile| &profile.inodes)
+                            // A link from outside survives the removal, so nothing is freed by it.
+                            .filter(|inode| inode.paths.iter().all(|path| path.starts_with(dir)))
+                            .map(|inode| inode.allocated)
+                            .sum()
                     }
-                    Some(skip) => pass_report.skip(&replace.member, skip),
-                },
+                    Action::RemoveTarget {
+                        dir, reason, bytes, ..
+                    } => {
+                        pass_report.removals.push((dir.clone(), reason.clone()));
+                        *bytes
+                    }
+                };
+                pass_report.planned += 1;
+                pass_report.planned_bytes += bytes;
+                if opts.dry_run {
+                    continue;
+                }
+                match action {
+                    Action::Compress(inode) => to_compress.push(inode),
+                    Action::Remove { dir, .. } => {
+                        removal_tried = true;
+                        // A locked profile dir or something inside it, never one around it.
+                        let unlocked = !locked.iter().any(|held| dir.starts_with(held));
+                        remove(dir, unlocked, bytes, &mut locked, &mut pass_report);
+                    }
+                    Action::RemoveTarget { target, dir, .. } => {
+                        removal_tried = true;
+                        // Ours only if the target holds still: we have a lock inside it, nothing in
+                        // it is being built, and what goes is inside it.
+                        let holds_lock = locked.iter().any(|held| held.starts_with(&target));
+                        let building = report.busy.iter().any(|busy| busy.starts_with(&target));
+                        let unlocked = !holds_lock || building || !dir.starts_with(&target);
+                        remove(dir, unlocked, bytes, &mut locked, &mut pass_report);
+                    }
+                    Action::Replace(replace) => match apply_replace(&replace, &locked) {
+                        None => {
+                            pass_report.applied += 1;
+                            pass_report.freed_bytes += replace.member.allocated;
+                            // Under the lock nobody else can have touched the new inode yet.
+                            pass.replaced(&replace, &Stamp::read(&replace.member.paths[0])?);
+                        }
+                        Some(skip) => pass_report.skip(&replace.member, skip),
+                    },
+                }
             }
-        }
-        for batch in to_compress.chunks(COMPRESS_BATCH) {
-            if let Some(why) = interrupt.due() {
-                report.interrupted = Some(why);
+            for batch in to_compress.chunks(COMPRESS_BATCH) {
+                if let Some(why) = interrupt.due() {
+                    report.interrupted = Some(why);
+                    break;
+                }
+                apply_compress(batch, &locked, *pass, passes, &mut pass_report);
+            }
+            if report.interrupted.is_some() {
+                round.push(pass_report);
                 break;
             }
-            apply_compress(batch, &locked, *pass, passes, &mut pass_report);
+            // A removal that failed half way has changed the dir too.
+            if pass_report.applied > 0 || removal_tried {
+                // ponytail: full rescan so the next pass sees the new inodes; patch the model in
+                // place if scan time ever shows up in the benchmarks.
+                profiles = scan_all(&locked)?;
+            }
+            progressed |= pass_report.applied > 0;
+            round.push(pass_report);
         }
-        if report.interrupted.is_some() {
-            report.passes.push(pass_report);
+        report.absorb(round);
+        // "Applied nothing", not "planned nothing": a group skipped for good is planned again
+        // by every round.
+        let again = opts.until_settled
+            && !opts.dry_run
+            && progressed
+            && report.interrupted.is_none()
+            && report.rounds < MAX_ROUNDS;
+        if !again {
             break;
         }
-        // A removal that failed half way has changed the dir too.
-        if pass_report.applied > 0 || removal_tried {
-            // ponytail: full rescan so the next pass sees the new inodes; patch the model in
-            // place if scan time ever shows up in the benchmarks.
-            profiles = scan_all(&locked)?;
-        }
-        report.passes.push(pass_report);
     }
     drop(locks);
     Ok(report)

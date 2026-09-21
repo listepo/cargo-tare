@@ -1022,3 +1022,34 @@ included, plus six new: a whole run through `Session` with the freshness oracle,
 kept apart by the run lock, the CLI's exit code 2, a stop between groups, a group out of lock
 budget, and in `tests/engine.rs` a stop raised between two replacements that leaves one file new,
 the other old and no temp file) — and `just check-cross` for Linux and Windows.
+
+### T25. `run` until nothing is left to do
+
+`docs/usage.md` has to tell users that a second run still finds work: clones made by `dedupe`
+are files `compress` never saw (46 actions on the benchmark workspace, `docs/bench.md`).
+`DESIGN.md` already names the cure — repeat until a round plans nothing. The locks are held
+once for all rounds, the report sums the rounds, `--dry-run` stays one round because it changes
+nothing a second round could see. Done: a test where one `run` leaves a second `run --dry-run`
+with an empty plan, the oracle green, and the troubleshooting entry gone from `docs/usage.md`.
+
+Lands on the session (T36) as `Request::until_settled`, so the daemon settles a unit in one
+visit exactly as the CLI does.
+
+Result. `engine::Options::until_settled`: after a round of every pass that applied anything,
+the engine runs the passes again on the rescanned profiles under the locks it already holds,
+until a round applies nothing — "applied", because a group skipped for good is planned again
+every round — at most 8 rounds, and never on a dry run. The stop flag and the lock budget end
+the rounds too. `Report::rounds` counts them; a later round adds what it applied and what it
+skipped or removed for the first time, so planned still equals applied plus skipped.
+`Request::until_settled` carries it through the session; the CLI always sets it. No flag.
+
+The fixture does not reproduce the 46 actions the benchmark workspace left for a second run:
+one round already settles it, with one target or two compared across families. So the rounds
+are proven in `tests/engine.rs` with two passes where the second makes work for the first (three
+rounds, counts summed; one round without `until_settled` and on a dry run), and
+`tests/settle.rs` checks the whole: two targets, one `run`, then `run --dry-run` plans nothing,
+and both targets stay fresh. `docs/bench.md` says the loop exists and was not re-measured there.
+The troubleshooting entry is gone from `docs/usage.md`; `DESIGN.md` describes the rounds.
+
+Verified on macOS: `just check` (fmt, clippy `-D warnings`, `--lib --no-default-features`,
+137 tests) and `just check-cross`.

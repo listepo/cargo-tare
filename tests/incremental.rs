@@ -44,6 +44,7 @@ fn named() -> Options {
     Options {
         dry_run: false,
         lossy: vec![incremental::NAME.to_string()],
+        ..Options::default()
     }
 }
 
