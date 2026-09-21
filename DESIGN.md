@@ -698,6 +698,33 @@ Zig, not the whole cache.
 lossy pass; `check`'s refusals; the CLI with no root; and, where `go` is installed, a `GOCACHE`
 fixture whose data entries still hash to their names and whose rebuild compiles nothing.
 
+## SwiftPM (`src/eco/swiftpm.rs`)
+
+- **Claim.** A dir named `.build` holding `workspace-state.json`, which every SwiftPM writes when
+  it resolves a package. The owner is the dir above it; the manifest `Package.swift`.
+- **Lock.** `swift build` (and `test`, `run`, `package`) takes TSCBasic's `FileLock` on the
+  scratch dir for the whole command: `flock` on `<temp dir>/<scratch path, / as _>.lock`, the
+  name cut to its last 255 bytes. Not `.build/.lock`, which only notes a pid. The temp dir is
+  `TMPDIR`, else the per-user one (`getconf DARWIN_USER_TEMP_DIR`), where Foundation looks when
+  `TMPDIR` is unset. The adapter names that file for the canonical scratch path as a
+  `Guard::Shared` over every unit; the engine creates it when a temp dir cleaner took it, as
+  `swift build` does. `tests/swiftpm.rs` holds it and watches `swift build` wait.
+- **Units.** The build outputs: `out/` (swiftbuild, the default build system) and
+  `<triple>/` dirs with a `debug` or `release` inside (the native one). Not `checkouts/` or
+  `repositories/`, which are dependency sources, and not `index-build/`, sourcekit-lsp's own
+  scratch dir under a lock of its own name.
+- **Private.** `out/CompilationCache.noindex`: mmapped databases, sparse, 12–25 GiB of logical
+  size each. `model::scan` leaves private dirs out whole, not only private files.
+- **Sharing.** Clones only: nothing says an output is never rewritten in place.
+- **No seed.** Absolute paths run through the build description and the swiftmodules.
+
+The oracle is `swift build -v`, whose output names compile tasks (`Compile`, `Compiling`) only
+when there are any; the plain output never does. A switch between debug and release recompiles
+by itself in swiftbuild, so the oracle builds the configuration that was built last.
+
+Known limit: a build started through a symlinked `--package-path`, or with `--scratch-path`,
+locks a file under a name derived from that other path, which the adapter cannot know.
+
 ## CLI surface
 
 ```

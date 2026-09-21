@@ -318,7 +318,11 @@ impl Session {
     /// What the manifests and cargo configs under `roots` and the cargo home's config make
     /// bigger than it needs to be. Reads text only; needs no run lock.
     pub fn advise(&self, roots: &[PathBuf], cargo_home: Option<&Path>) -> Result<Advice> {
-        let inventory = read_inventory(roots)?;
+        let mut inventory = read_inventory(roots)?;
+        // Manifests, configs and notes here are all cargo's.
+        inventory
+            .targets
+            .retain(|target| target.ecosystem == CARGO.name());
         let mut advice = Advice::default();
         let mut read = Vec::new();
         for target in &inventory.targets {

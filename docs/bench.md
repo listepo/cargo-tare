@@ -199,6 +199,23 @@ Oracle, the store's own invariant: all 1131 data entries (`*-d`) still hash to t
 SHA-256, and `go build -x std` afterwards runs no `compile` step (0.55 s). `tests/store.rs`
 checks the same on a small module whenever `go` is installed.
 
+## A SwiftPM package
+
+swift-argument-parser (shallow clone of `main`), Swift 6.4 on macOS 27, APFS: `swift build` and
+`swift build -c release` into an empty `.build` in a temp dir, then
+`dunnage run --min-age 0 <package>` from a release build.
+
+| | before | after | delta |
+| --- | --- | --- | --- |
+| `du` of `.build` | 356.7 MiB | 157.4 MiB | **−199 MiB (−55.9%)** |
+| compress | | 1684 files, 199.2 MiB freed | |
+| dedupe | | 43 files, 1.1 MiB freed | debug and release share little |
+
+Oracle: `swift build -c release -v` afterwards runs no compile task, as it did not before the
+run, and the `math` example still adds. The largest share is `SDKExplicitPrecompiledModules` and
+`ModuleCache.noindex`, per package copies of SDK modules: more packages on one machine would
+give dedupe more to share, not measured yet.
+
 ## sccache, for comparison
 
 | | clean build | target | cache |

@@ -86,3 +86,49 @@ days ago, or with no threshold, it is only reported (`PROJECT GONE` in `status`,
 a `Cargo.toml` back between the inventory and the lock keeps the target; the threshold without
 `--lossy orphans` is an error. The worktree orphan tests still pass unchanged.
 `~/.cache/dunnage` absent.
+
+### T30. Swift: SwiftPM `.build/` (DerivedData split off as T30.1)
+
+The most promising target after cargo: APFS is where the tool is strongest, DerivedData runs to
+tens of GB, and the only known cure is deleting it. SwiftPM first — `.build/` sits in the
+package like `target/` does, and SwiftPM refuses a second instance on it, so there is a lock to
+find. DerivedData second: `info.plist` records `WorkspacePath`, which makes `orphans` and
+`evict` direct; it needs T29. Spike: confirm the lock file and the call, the plist keys on the
+current Xcode, the compress and dedupe yield, and an oracle (`swift build` twice, the second
+compiles nothing). Reading a plist may need a crate or `plutil`; a new dependency is the
+creator's call at claim time. `seed` does not apply — the dir name is a hash of the path.
+
+#### Result
+
+- Spike (Swift 6.4, Xcode toolchain): `swift build` holds `flock` on
+  `<temp dir>/<scratch path, / as _>.lock` (TSCBasic `FileLock`, last 255 bytes of the name) for
+  the whole command; `.build/.lock` is only a pid note. swiftbuild writes into `.build/out`, the
+  native build system into `.build/<triple>`. `out/CompilationCache.noindex` holds mmapped,
+  sparse databases of 12–25 GiB logical size. A switch between debug and release recompiles by
+  itself; only `swift build -v` names compile tasks.
+- `src/eco/swiftpm.rs`, registered after cargo: claim `.build` with `workspace-state.json`,
+  owner the package dir, manifest `Package.swift`, units `out/` and `<triple>/`,
+  `Guard::Shared` on the temp lock of the canonical scratch path, `CompilationCache.noindex`
+  private, clones only, no `seed`.
+- `sys::temp_dir`: `TMPDIR`, else `getconf DARWIN_USER_TEMP_DIR` on macOS.
+- The engine creates a missing `Guard::Shared` lock file, as the build tool does.
+- `model::scan` leaves private dirs out whole.
+- `advise` looks at cargo targets only.
+- Yield on swift-argument-parser (debug + release): `.build` 356.7 MiB → 157.4 MiB (−55.9%).
+- DerivedData is T30.1: none exists here and none may be made in the real `~/Library`.
+- Docs: `README.md`, `docs/usage.md`, `DESIGN.md` SwiftPM section, `docs/bench.md`,
+  `toolchain.md` (`swift`, optional).
+
+#### Verified
+
+`just check` (172 tests) and `just check-cross` green. `tests/swiftpm.rs`:
+- fixtures: the claim, the units (checkouts, repositories and `index-build` left out), the
+  compilation cache never scanned, one lock for all units named in the temp dir, a held lock
+  making every unit busy, and a missing lock created;
+- with `swift` installed: `swift build` waits while the test holds the lock the adapter names,
+  and after dedupe + compress `swift build -v` compiles nothing and the binary runs, while a
+  new source mtime does make it compile (the oracle can say no).
+
+By hand on swift-argument-parser: `swift build -c release -v` runs no compile task after the
+run, as before it, and the `math` example still adds. `~/.cache/dunnage` is absent, and no
+lock file is left in the temp dir.

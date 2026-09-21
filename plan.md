@@ -12,7 +12,7 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | --- | --- | --- | --- | --- | --- |
 | T24 | todo | P1 | 3 | 0% | |
 | T21 | todo | P2 | 5 | 0% | |
-| T30 | todo | P2 | 4 | 0% | |
+| T30.1 | todo | P2 | 3 | 0% | |
 | T31 | todo | P2 | 4 | 0% | |
 | T32 | todo | P2 | 4 | 0% | |
 | T34 | todo | P2 | 4 | 0% | |
@@ -116,16 +116,15 @@ Suggested split if the creator wants it smaller: (a) test environment + item 2 �
 (b) identity and the signature change, (c) NTFS compression, (d) ReFS cloning, (e) paths and
 docs.
 
-### T30. Swift: SwiftPM `.build/` and Xcode DerivedData
+### T30.1. Swift: Xcode DerivedData
 
-The most promising target after cargo: APFS is where the tool is strongest, DerivedData runs to
-tens of GB, and the only known cure is deleting it. SwiftPM first — `.build/` sits in the
-package like `target/` does, and SwiftPM refuses a second instance on it, so there is a lock to
-find. DerivedData second: `info.plist` records `WorkspacePath`, which makes `orphans` and
-`evict` direct; it needs T29. Spike: confirm the lock file and the call, the plist keys on the
-current Xcode, the compress and dedupe yield, and an oracle (`swift build` twice, the second
-compiles nothing). Reading a plist may need a crate or `plutil`; a new dependency is the
-creator's call at claim time. `seed` does not apply — the dir name is a hash of the path.
+Split off from T30. `~/Library/Developer/Xcode/DerivedData/<name>-<hash>/`, with `info.plist`
+recording `WorkspacePath`, which makes `orphans` and `evict` direct. No lock: needs the quiet
+tier (T29), with `xcodebuild`, `XCBBuildService` and `SWBBuildService` as the tools. `plutil`
+reads the plist without a new dependency. Needs a way to produce a DerivedData dir for tests
+without writing into the real `~/Library` (`xcodebuild -derivedDataPath` in a temp dir is the
+candidate; whether it writes `info.plist` there is the first thing to check). Oracle: a second
+`xcodebuild` compiles nothing.
 
 ### T31. .NET: `bin/` and `obj/`
 

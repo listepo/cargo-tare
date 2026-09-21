@@ -1,6 +1,6 @@
 - T24. A place where the Windows tests run
 - T21. Windows: NTFS compression and ReFS block cloning
-- T30. Swift: SwiftPM `.build/` and Xcode DerivedData
+- T30.1. Swift: Xcode DerivedData
 - T31. .NET: `bin/` and `obj/`
 - T32. C and C++: CMake, Meson and Ninja build dirs
 - T34. Daemon mode: `dunnage daemon`

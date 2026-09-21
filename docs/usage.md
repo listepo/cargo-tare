@@ -78,6 +78,13 @@ ever removed; sources are never touched.
 Every pass takes cargo's own build lock. A profile dir with a build running is skipped and
 reported, and the exit code says so.
 
+SwiftPM packages go through the same passes as cargo targets, under the lock `swift build`
+takes: `status` lists a `.build` dir next to a `Package.swift`, `run` compresses and dedupes its
+build outputs (`.build/out`, or `.build/<triple>`), and `--lossy evict` or `--lossy orphans`
+remove them. Dependency checkouts in `.build/checkouts` are not touched. A package built through
+a symlinked `--package-path`, or with `--scratch-path`, takes its lock under another name: run
+the tool when no such build is going on.
+
 ## Commands
 
 ### `dunnage status [--json] [--cargo-home [DIR]] [ROOT]...`

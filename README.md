@@ -164,6 +164,14 @@ target or a cargo home. A `GOCACHE` after `go build std` went from 216 MiB to 64
 build afterwards compiled nothing (`docs/bench.md`). Repeatable; `stores = [...]` in the config
 does the same on every run.
 
+SwiftPM packages are found too: a `.build` dir holding `workspace-state.json`. `swift build`
+locks it with a file in the temp dir named after its path, and the tool takes the same lock, so a
+running build makes the package busy exactly as a cargo build does. Only the build outputs are
+worked on (`.build/out`, or `.build/<triple>` from the older build system); dependency checkouts
+and the mmapped compilation cache are left alone, and dedupe uses clones only. On
+swift-argument-parser built in debug and release, `.build` went from 357 MiB to 157 MiB and the
+next `swift build` compiled nothing (`docs/bench.md`). Xcode's DerivedData is not handled yet.
+
 **advise** changes nothing: it reads the manifests and cargo configs of the projects it finds
 and names what makes their targets bigger than they need to be — full debuginfo where
 `line-tables-only` would do, dependency debuginfo nobody steps into, a missing `strip` in

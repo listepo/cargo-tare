@@ -218,3 +218,14 @@ pub fn tool_cwds(tools: &[&str]) -> Option<Vec<PathBuf>> {
             .collect(),
     )
 }
+
+/// `DARWIN_USER_TEMP_DIR`: the per-user temp dir, as `getconf` reads it from `confstr`.
+pub fn user_temp_dir() -> Option<PathBuf> {
+    let out = std::process::Command::new("/usr/bin/getconf")
+        .arg("DARWIN_USER_TEMP_DIR")
+        .output()
+        .ok()?;
+    let dir = String::from_utf8(out.stdout).ok()?;
+    let dir = dir.trim();
+    (out.status.success() && !dir.is_empty()).then(|| PathBuf::from(dir))
+}

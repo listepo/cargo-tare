@@ -91,13 +91,18 @@ pub struct Profile {
 }
 
 /// Walks one unit. Symlinks are not followed, other devices are not entered, and the build's
-/// private files are left out.
+/// private files and dirs are left out.
 pub fn scan(dir: &Path, eco: &dyn Ecosystem) -> io::Result<Profile> {
     let mut by_inode: HashMap<(u64, u64), Inode> = HashMap::new();
     let mut stale_temps = Vec::new();
-    for entry in WalkDir::new(dir).follow_links(false).same_file_system(true) {
+    let walk = WalkDir::new(dir)
+        .follow_links(false)
+        .same_file_system(true)
+        .into_iter()
+        .filter_entry(|entry| entry.depth() == 0 || !eco.private(entry.file_name()));
+    for entry in walk {
         let entry = entry?;
-        if !entry.file_type().is_file() || eco.private(entry.file_name()) {
+        if !entry.file_type().is_file() {
             continue;
         }
         if entry.file_name().to_string_lossy().starts_with(TMP_PREFIX) {

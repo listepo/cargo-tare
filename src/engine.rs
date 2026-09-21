@@ -260,11 +260,14 @@ pub struct ProfileLock {
 
 impl ProfileLock {
     /// The lock `guard` names. `None` when a build holds it, and for [`Guard::Quiet`] and
-    /// [`Guard::Immutable`], which have none to take. A missing lock file is an error: not a
-    /// unit. [`Guard::Held`] is not implemented and refused.
+    /// [`Guard::Immutable`], which have none to take. A missing [`Guard::Lock`] file is an error:
+    /// not a unit. A missing [`Guard::Shared`] one is created, as the build tool creates it: it
+    /// lives outside the units, where a temp dir cleaner may have taken it. [`Guard::Held`] is not
+    /// implemented and refused.
     pub fn try_guard(guard: &Guard) -> io::Result<Option<Self>> {
         match guard {
-            Guard::Lock(file) | Guard::Shared(file) => Self::try_lock_file(file),
+            Guard::Lock(file) => Self::try_lock_file(file, false),
+            Guard::Shared(file) => Self::try_lock_file(file, true),
             Guard::Quiet | Guard::Immutable => Ok(None),
             Guard::Held => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -273,8 +276,13 @@ impl ProfileLock {
         }
     }
 
-    fn try_lock_file(file: &Path) -> io::Result<Option<Self>> {
-        let file = File::options().read(true).write(true).open(file)?;
+    fn try_lock_file(file: &Path, create: bool) -> io::Result<Option<Self>> {
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .create(create)
+            .truncate(false)
+            .open(file)?;
         match file.try_lock() {
             Ok(()) => Ok(Some(Self { _file: file })),
             Err(TryLockError::WouldBlock) => Ok(None),

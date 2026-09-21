@@ -70,6 +70,18 @@ pub fn tool_running(dir: &Path, tools: &[&str]) -> Option<bool> {
     )
 }
 
+/// The temp dir build tools put their lock files in: `TMPDIR`, else, on macOS, the per-user one
+/// Foundation falls back to, where a tool started without `TMPDIR` looks too.
+pub fn temp_dir() -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("TMPDIR").is_none_or(|dir| dir.is_empty())
+        && let Some(dir) = imp::user_temp_dir()
+    {
+        return dir;
+    }
+    std::env::temp_dir()
+}
+
 /// Runs a probe inside `dir` and puts the directory's modification time back afterwards.
 ///
 /// Creating and removing a file changes the mtime of the directory it is in, and that mtime is

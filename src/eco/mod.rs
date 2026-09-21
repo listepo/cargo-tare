@@ -2,10 +2,11 @@
 //! that knows a platform lives under `sys`: the engine, the inode model, the index and the
 //! lossless passes ask through [`Ecosystem`] and never name a build system's files or dirs.
 //!
-//! Cargo is the only adapter so far. The shape is `docs/architecture.md`, "The adapter".
+//! Cargo and SwiftPM so far. The shape is `docs/architecture.md`, "The adapter".
 
 pub mod cargo;
 pub mod store;
+pub mod swiftpm;
 
 use std::ffi::OsStr;
 use std::io;
@@ -50,7 +51,8 @@ pub trait Ecosystem: Sync {
     /// What keeps a build and this tool from working on `unit` at the same time.
     fn guard(&self, unit: &Path) -> Guard;
 
-    /// The build's own bookkeeping, by file name: never scanned, never copied, never touched.
+    /// The build's own bookkeeping, by file or dir name: never scanned, never copied, never
+    /// touched.
     fn private(&self, _name: &OsStr) -> bool {
         false
     }
@@ -135,7 +137,7 @@ impl Sharing {
 }
 
 /// Every adapter, in the order the shared walk asks them.
-pub static REGISTRY: [&dyn Ecosystem; 1] = [&cargo::CARGO];
+pub static REGISTRY: [&dyn Ecosystem; 2] = [&cargo::CARGO, &swiftpm::SWIFTPM];
 
 /// The registered adapter called `name`.
 pub fn named(name: &str) -> Option<&'static dyn Ecosystem> {
