@@ -1184,3 +1184,60 @@ passes and reports, the adapter `seed` uses) and the inventory's cargo-shaped st
 
 `just check` and `just check-cross` green; every existing test passes unchanged in meaning (only
 call sites moved to the new API), and so does `tests/monorepo.rs`.
+
+### T29. A safety tier for build systems without a build lock
+
+Cargo holds one advisory lock for the whole build; Ninja, Make, MSBuild and Xcode hold nothing
+an outsider can test. Without a lock the engine's re-check of `(size, mtime)` before each
+`rename` narrows the race and does not close it. Build the weaker tier and name it as such in
+every report: a larger default `min-age`, a sharing violation or a busy file counted as "busy"
+(exit code 2) instead of a failure, a check for the build tool's running processes under the
+dir, and a refusal of lossy passes when any of those says "maybe". Two runs of the tool itself —
+the daemon and a manual one — are kept apart by the session's run lock (T36), which this tier
+relies on. Done: a test that writes into a fixture dir while a pass runs and ends with the newer
+bytes in place, never the older ones; `DESIGN.md` gains the tier next to "Safety invariants"
+with exactly what it does not promise.
+
+#### Execution plan
+
+1. `Guard::Quiet` in the engine: no lock; `Ecosystem::tools` names the build tool's processes,
+   and `sys::tool_running(dir, tools)` (macOS: `ps` then `lsof -d cwd`; Linux: `/proc`; Windows:
+   unknown) decides. Running under the unit, or the unit under its cwd: busy, left out. Unknown:
+   the unit is *unsure*.
+2. After the scan, files of a quiet unit younger than `Options::quiet_min_age` (default one day,
+   never lowered by `--min-age`) are dropped from the model; any dropped makes the unit unsure.
+3. Lossy actions on an unsure unit are refused (`Skip::Unsure`).
+4. A busy file (`ETXTBSY`, a Windows sharing or lock violation) is `Skip::Busy`, and its unit is
+   reported busy (exit 2) instead of failed — for every guard.
+5. `Report::quiet` lists the units worked on without a lock; the table and `--json` say so.
+6. `tests/quiet.rs` with a test adapter: a writer rewriting a file during a dedupe run ends with
+   its own bytes and the old equal files are still deduped; a running tool makes the unit busy;
+   a lossy removal in an unsure unit is refused. `DESIGN.md` "Safety tier without a build lock"
+   next to "Safety invariants".
+
+#### Result
+
+- `Guard::Quiet` works. `Ecosystem::tools` names the build tool's processes;
+  `sys::tool_running` looks for them (`ps` + `lsof` on macOS, `/proc` on Linux, unknown on
+  Windows). A tool in the unit, below it or in a dir around it makes the unit busy; a process in
+  a filesystem root counts for nothing.
+- `engine::QUIET_MIN_AGE` (one day) is a constant rather than an option: no pass setting and no
+  flag lowers it. Young files are dropped from the model at every scan, and their unit becomes
+  unsure; an adapter with no tools, or a platform with no check, makes every quiet unit unsure.
+- `Skip::Unsure` refuses `Remove` in an unsure unit and `RemoveTarget` over one. `Skip::Busy`
+  (`ETXTBSY`, `EBUSY`, Windows errors 32 and 33) puts the file's unit into `Report::busy`, which
+  makes exit code 2, for every guard.
+- Found while writing the race test: the source of a clone was checked before the copy only, so
+  bytes written into it during the copy could land under the member's names. The source is now
+  stamped again after the clone (not after a link: that is the source itself). This holds for
+  every guard.
+- `Report::quiet`; the table prints `no build lock, weaker checks: <unit>`, `--json` a `quiet`
+  list per group.
+- `DESIGN.md` "Safety tier without a build lock" with what it does not promise;
+  `docs/architecture.md` notes T29 as done. No adapter uses `Quiet` yet.
+
+#### Verified
+
+`just check` (151 tests) and `just check-cross` green. `tests/quiet.rs` 15 runs in a row green;
+the unit test of the busy-error classifier is in `src/engine.rs`. `~/.cache/dunnage` absent after
+every run.

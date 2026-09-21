@@ -228,6 +228,39 @@ fn compress_file(path: &Path) -> io::Result<()> {
     file.sync_all()
 }
 
+/// The current dirs of the running processes called one of `tools`, from `/proc`. `None` where
+/// there is no `/proc`. A name longer than the kernel keeps (15 bytes) matches on its prefix.
+pub fn tool_cwds(tools: &[&str]) -> Option<Vec<PathBuf>> {
+    const COMM_LEN: usize = 15;
+    let mut cwds = Vec::new();
+    for entry in fs::read_dir("/proc").ok()? {
+        let Ok(entry) = entry else { continue };
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .bytes()
+            .all(|b| b.is_ascii_digit())
+        {
+            continue;
+        }
+        // A process can end between the listing and the read.
+        let Ok(comm) = fs::read_to_string(entry.path().join("comm")) else {
+            continue;
+        };
+        let comm = comm.trim_end_matches('\n');
+        if !tools
+            .iter()
+            .any(|tool| tool.get(..tool.len().min(COMM_LEN)) == Some(comm))
+        {
+            continue;
+        }
+        if let Ok(cwd) = fs::read_link(entry.path().join("cwd")) {
+            cwds.push(cwd);
+        }
+    }
+    Some(cwds)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

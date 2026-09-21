@@ -151,6 +151,44 @@ for filesystems without reflinks.
 5. Lossy passes never run unless enabled in config or by flag, and always support `--dry-run`.
 6. Never follow symlinks out of a target dir; never cross a device boundary.
 
+## Safety tier without a build lock
+
+Invariant 1 needs a lock the build holds while it writes. Cargo has one; Make, Ninja, MSBuild
+and Xcode hold nothing an outsider can test. An adapter says so with `Guard::Quiet`, and its
+units get a weaker tier, named as such in every report (`no build lock, weaker checks` in the
+table, `quiet` per group in `--json`):
+
+1. **Process check.** `Ecosystem::tools` names the build tool's processes. A unit is busy —
+   skipped, exit code 2 — when one of them has its current dir in the unit, below it, or in a
+   dir around it (`make` in the project root builds into `build/`); a process in a filesystem
+   root counts for nothing. macOS reads `ps` and `lsof`, Linux `/proc`. Where the check cannot
+   run — Windows, or an adapter that names no tool — the unit is *unsure*.
+2. **Age floor.** Files younger than `engine::QUIET_MIN_AGE` (one day) are left out of the model,
+   whatever a pass's own `min-age` says. A unit that had any is unsure.
+3. **Busy files.** A file found in use while it is replaced — `ETXTBSY`, `EBUSY`, a Windows
+   sharing or lock violation — is skipped as `Busy` and its unit is reported busy (exit code 2)
+   instead of failed. This holds for every guard.
+4. **Lossy passes** skip an unsure unit (`Unsure`); `RemoveTarget` skips a build dir holding
+   one.
+5. **Invariants 2–6 hold unchanged**, and one check is added for every guard: the source of a
+   clone is stamped again after the copy, so bytes written into it during the copy never
+   land under the member's names.
+6. Two runs of the tool itself — the daemon and a manual one — are kept apart by the session's
+   run lock, not by this tier.
+
+What the tier does **not** promise:
+
+- It does not close the race, it narrows it. A build that opens a member between the last
+  `(size, mtime)` check and the `rename` writes into the unlinked old inode, and those bytes are
+  lost; the next build rebuilds the file. `tests/quiet.rs` rewrites a file during a dedupe run
+  and ends with the newer bytes, which shows the window is small, not that it is closed.
+- A build of another user, in a container, on another machine over a network filesystem, or
+  under a process name the adapter does not list, is not seen.
+- A build that starts after the process check is not seen either; only the age floor and the
+  per-file checks stand between it and a lossy pass that is already removing.
+- A build tool that writes a file and leaves its mtime in the past (an extracted archive, a copy
+  that keeps times) gets past the age floor.
+
 **Freshness oracle** (the acceptance test for every lossless pass): build a fixture workspace, run
 the pass, then `cargo build --message-format=json` must report every unit as `fresh` and
 `cargo test` must pass. Size is measured in allocated blocks (`st_blocks`), not logical length.
@@ -219,9 +257,10 @@ not entered and `.git` is never entered — so a CMake dir or a whole cargo targ
 script left inside a target is nobody's.
 
 The engine takes the adapter instead of a lock kind and locks what `guard` names:
-`Guard::Lock(file)` per unit, `Guard::Shared(file)` once for every unit under it. `Held`
-(an embedding caller holds the build's lock, R8), `Quiet` (T29) and `Immutable` (T33) are in the
-enum and refused until their tasks. `model::scan` records the unit's `last_used` at scan time, so
+`Guard::Lock(file)` per unit, `Guard::Shared(file)` once for every unit under it, and nothing for
+`Guard::Quiet`, which gets the tier of "Safety tier without a build lock". `Held` (an embedding
+caller holds the build's lock, R8) and `Immutable` (T33) are in the enum and refused until their
+tasks. `model::scan` records the unit's `last_used` at scan time, so
 `evict` and `incremental` re-check a unit's last build under its lock without asking cargo.
 Family and orphan status come from the owner's project, not from the build dir's parents; for
 cargo the owner is the dir above the target, so nothing changed.

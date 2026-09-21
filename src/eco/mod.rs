@@ -59,6 +59,13 @@ pub trait Ecosystem: Sync {
         None
     }
 
+    /// For [`Guard::Quiet`]: the build tool's process names. One of them running in a unit, or
+    /// in a dir around it, makes the unit busy. Empty: nothing can be checked, so every quiet
+    /// unit is unsure and lossy passes leave it alone.
+    fn tools(&self) -> &'static [&'static str] {
+        &[]
+    }
+
     fn policy(&self) -> Policy;
 }
 
@@ -81,7 +88,9 @@ pub enum Guard {
     /// One lock file for many units at once: cargo's `.package-cache` for its home. Held: every
     /// unit under it is worked on. Busy: none of them is.
     Shared(PathBuf),
-    /// No lock exists (T29). Not implemented; the engine refuses it.
+    /// No lock exists: Make, Ninja, MSBuild, Xcode. The weaker tier of `DESIGN.md`, "Safety
+    /// tier without a build lock": young files are left out, a running build tool makes the
+    /// unit busy, and lossy passes run only where nothing says "maybe".
     Quiet,
     /// A content-addressed store whose names never get other bytes (T33). Not implemented; the
     /// engine refuses it.

@@ -544,6 +544,9 @@ fn print_report(report: &engine::Report, dry_run: bool) {
     for dir in &report.busy {
         println!("  busy, skipped: {}", dir.display());
     }
+    for dir in &report.quiet {
+        println!("  no build lock, weaker checks: {}", dir.display());
+    }
     if report.temps_removed > 0 {
         println!("  stale temp files removed: {}", report.temps_removed);
     }
@@ -595,6 +598,8 @@ impl<'a> JsonReport<'a> {
 struct JsonGroup<'a> {
     family: &'a Path,
     busy: &'a [PathBuf],
+    /// Worked on without a lock: `DESIGN.md`, "Safety tier without a build lock".
+    quiet: &'a [PathBuf],
     temps_removed: usize,
     passes: Vec<JsonPass<'a>>,
 }
@@ -604,6 +609,7 @@ impl<'a> JsonGroup<'a> {
         Self {
             family,
             busy: &report.busy,
+            quiet: &report.quiet,
             temps_removed: report.temps_removed,
             passes: report.passes.iter().map(JsonPass::new).collect(),
         }

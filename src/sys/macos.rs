@@ -175,3 +175,46 @@ impl Task for FileNotes {
         self.notes.push(path, "not compressible enough");
     }
 }
+
+/// The current dirs of the running processes called one of `tools`: `ps` for the names, `lsof`
+/// for the dirs. `None` when either cannot run.
+pub fn tool_cwds(tools: &[&str]) -> Option<Vec<PathBuf>> {
+    let ps = std::process::Command::new("/bin/ps")
+        .args(["-axo", "pid=,comm="])
+        .output()
+        .ok()?;
+    if !ps.status.success() {
+        return None;
+    }
+    let pids: Vec<&str> = std::str::from_utf8(&ps.stdout)
+        .ok()?
+        .lines()
+        .filter_map(|line| line.trim_start().split_once(' '))
+        .filter(|(_, comm)| {
+            let name = Path::new(comm.trim()).file_name();
+            tools
+                .iter()
+                .any(|tool| name == Some(std::ffi::OsStr::new(tool)))
+        })
+        .map(|(pid, _)| pid)
+        .collect();
+    if pids.is_empty() {
+        return Some(Vec::new());
+    }
+    // `-a`: both conditions; `-Fn`: one `n<path>` line per current dir.
+    let lsof = std::process::Command::new("/usr/sbin/lsof")
+        .args(["-a", "-d", "cwd", "-Fn", "-p", &pids.join(",")])
+        .output()
+        .ok()?;
+    // lsof fails when one of the processes is gone or not ours, and still lists the rest.
+    if !lsof.status.success() && lsof.stdout.is_empty() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&lsof.stdout)
+            .lines()
+            .filter_map(|line| line.strip_prefix('n'))
+            .map(PathBuf::from)
+            .collect(),
+    )
+}

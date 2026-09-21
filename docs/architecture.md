@@ -322,6 +322,9 @@ questions (the lock file is never scanned, `incremental/` is scanned but never s
 is the monorepo fixture with the assertions that hold today: each build dir found once, the
 nested ones nobody's, every position one family, `seed` choosing by position.
 
+Done in T29: `Guard::Quiet` works, with the tier of `DESIGN.md`, "Safety tier without a build
+lock"; `Ecosystem::tools` names the processes the check looks for. No adapter uses it yet.
+
 The daemon's loop lives in the binary's half because only a process has triggers; everything
 it *does* is a `Session` call. How the tool is invoked without cargo is settled with the first
 non-cargo adapter; since T42 the binary is `dunnage`, with `cargo dunnage` as an optional link,

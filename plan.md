@@ -12,7 +12,6 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | --- | --- | --- | --- | --- | --- |
 | T24 | todo | P1 | 3 | 0% | |
 | T21 | todo | P2 | 5 | 0% | |
-| T29 | todo | P2 | 4 | 0% | |
 | T30 | todo | P2 | 4 | 0% | |
 | T31 | todo | P2 | 4 | 0% | |
 | T32 | todo | P2 | 4 | 0% | |
@@ -25,8 +24,7 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | T35 | todo | P3 | 2 | 0% | |
 
 Blockers, take these first. **T24** blocks T21: nothing on Windows can be tested without it.
-**T29** blocks T31, T32, T33 and the
-Xcode half of T30, which have no build lock to take. **T33** blocks T35. T35 is the
+**T33** blocks T35. T35 is the
 lowest priority in the plan by the creator's word: take it only when nothing else is free.
 
 Decisions the plan is built on, all the creator's: the tool runs as a CLI **and** as a daemon
@@ -119,19 +117,6 @@ State: `just check` is green (128 tests run on macOS) and both cross targets com
 Suggested split if the creator wants it smaller: (a) test environment + item 2 — now T24,
 (b) identity and the signature change, (c) NTFS compression, (d) ReFS cloning, (e) paths and
 docs.
-
-### T29. A safety tier for build systems without a build lock
-
-Cargo holds one advisory lock for the whole build; Ninja, Make, MSBuild and Xcode hold nothing
-an outsider can test. Without a lock the engine's re-check of `(size, mtime)` before each
-`rename` narrows the race and does not close it. Build the weaker tier and name it as such in
-every report: a larger default `min-age`, a sharing violation or a busy file counted as "busy"
-(exit code 2) instead of a failure, a check for the build tool's running processes under the
-dir, and a refusal of lossy passes when any of those says "maybe". Two runs of the tool itself —
-the daemon and a manual one — are kept apart by the session's run lock (T36), which this tier
-relies on. Done: a test that writes into a fixture dir while a pass runs and ends with the newer
-bytes in place, never the older ones; `DESIGN.md` gains the tier next to "Safety invariants"
-with exactly what it does not promise.
 
 ### T30. Swift: SwiftPM `.build/` and Xcode DerivedData
 
