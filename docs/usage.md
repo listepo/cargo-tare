@@ -97,12 +97,15 @@ busy, clones only. A build dir configured in the source tree itself (`cmake .`) 
 
 ## Commands
 
-### `dunnage status [--json] [--cargo-home [DIR]] [ROOT]...`
+### `dunnage status [--json] [--all] [--cargo-home [DIR]] [ROOT]...`
 
 Read-only inventory. `ROOT` defaults to the current directory; a target dir itself works too.
+Build dirs are grouped by family, then checkout, with a subtotal per ecosystem; each group lists
+its five largest build dirs by their place in the checkout, and `--all` lists them all.
 `--cargo-home` adds the unpacked registry sources and git checkouts in `~/.cargo` (or
 `$CARGO_HOME`, or `DIR`) to the report, at the price of a second walk. `--json` prints the same
-as one JSON document.
+as one JSON document, flat: one entry per build dir with its `ecosystem`, `checkout`, `position`
+in the checkout and `guard` (`lock`, `shared`, `quiet`, `immutable`).
 
 ### `dunnage advise [--json] [ROOT]...`
 
@@ -271,6 +274,10 @@ idle-days = 30
 [family."/Users/me/code/monorepo/.git"]
 skip = true
 
+[family."/Users/me/code/big/.git"]
+skip-paths = ["vendor"]  # build dirs at these places in every checkout
+ecosystems = ["cargo"]   # only these adapters' build dirs
+
 [orphans]
 project-idle-days = 7  # as --orphans-project-idle-days
 
@@ -280,7 +287,10 @@ rediscover-secs = 21600  # how often the roots are walked for new build dirs
 lock-budget-secs = 2     # how long a group may hold a build's locks
 ```
 
-The family key is the git common dir that `status` prints for the family.
+The family key is the git common dir that `status` prints for the family. A `skip-paths` entry
+is a prefix of the build dir's position in its checkout, compared by whole components; a
+skipped build dir is neither worked on nor counted by any pass. `ecosystems` takes the adapter
+names `status` prints: `cargo`, `swiftpm`, `dotnet`, `cmake`.
 `[index] idle-days` is how long the hash index keeps a file's hash that no run has looked up
 (default 30); forgetting one costs a single rehash.
 

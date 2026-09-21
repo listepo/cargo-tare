@@ -60,8 +60,9 @@ dunnage run --dry-run --lossy evict --evict-idle-days 30 ~/code
 dunnage run --lossy evict --evict-max-total-gib 50 ~/code
 ```
 
-`status` lists cargo target dirs grouped by family (a repository and its worktrees): size on disk
-as `du` counts it, days since the last build, `ORPHANED` for a worktree git no longer knows, `PROJECT GONE` for a target whose `Cargo.toml`
+`status` lists build dirs grouped by family (a repository and its worktrees), then by checkout,
+with a subtotal per ecosystem and its five largest build dirs (`--all` lists every one), each by
+its place in the checkout: size on disk as `du` counts it, days since the last build, `ORPHANED` for a worktree git no longer knows, `PROJECT GONE` for a target whose `Cargo.toml`
 is gone from a live checkout, and
 totals — bytes not compressed yet and an upper bound of what dedupe could share.
 
@@ -230,11 +231,19 @@ idle-days = 30              # forget hashes no run has looked up for this long; 
 
 [family."/Users/me/code/monorepo/.git"]
 skip = true                 # never touch this repository and its worktrees
+
+[family."/Users/me/code/big/.git"]
+skip-paths = ["vendor", "third_party/llvm"]  # these places, in every checkout
+ecosystems = ["cargo", "cmake"]              # only these build systems here
 ```
 
 A family is a repository and its worktrees, keyed by the git common dir `status` prints (a target
-without a repository is its own family). `skip` is the only per-family key: the `evict` cap and
-the idle rules are decided over everything under the roots at once, so they stay global.
+without a repository is its own family). Per family there is only what to leave alone: `skip`
+for all of it, `skip-paths` for build dirs whose place in their checkout starts with one of the
+paths (whole components), and `ecosystems` for the build systems it is worked on by. A skipped
+build dir is left out before any pass chooses: the `evict` cap does not count it either. The
+`evict` cap and the idle rules are decided over everything under the roots at once, so they stay
+global.
 
 ## Platforms
 

@@ -31,8 +31,13 @@ pub struct ProfileInfo {
 pub struct Target {
     pub root: PathBuf,
     /// The adapter that claimed the dir, by name: see [`eco::named`].
-    #[serde(skip)]
     pub ecosystem: &'static str,
+    /// The checkout the project is in: the nearest dir above it holding a `.git`.
+    pub checkout: Option<PathBuf>,
+    /// Where the build dir sits inside that checkout; `None` outside it.
+    pub position: Option<PathBuf>,
+    /// What keeps a build and the passes apart here: [`eco::Guard::name`] of its first unit.
+    pub guard: &'static str,
     /// The project the dir was built from, as the adapter tells it. Family and orphan status
     /// are the project's.
     #[serde(skip)]
@@ -149,6 +154,14 @@ fn inspect(root: &Path, eco: &'static dyn Ecosystem) -> io::Result<(Target, Hash
         })
         .collect();
     let project = eco.owner(root).map(|owner| owner.project);
+    let checkout = checkout_root(project.as_deref().unwrap_or(root)).map(Path::to_path_buf);
+    let position = checkout
+        .as_deref()
+        .and_then(|checkout| root.strip_prefix(checkout).ok())
+        .map(Path::to_path_buf);
+    let guard = eco
+        .guard(profiles.first().map_or(root, |profile| &profile.dir))
+        .name();
     let (family, orphaned) = project.as_deref().map_or((None, false), git_link);
     let project_gone = project
         .as_deref()
@@ -156,6 +169,9 @@ fn inspect(root: &Path, eco: &'static dyn Ecosystem) -> io::Result<(Target, Hash
     let mut target = Target {
         root: root.to_path_buf(),
         ecosystem: eco.name(),
+        checkout,
+        position,
+        guard,
         project,
         last_built_unix: profiles.iter().filter_map(|p| p.last_built_unix).max(),
         profiles,
@@ -221,6 +237,11 @@ fn inspect(root: &Path, eco: &'static dyn Ecosystem) -> io::Result<(Target, Hash
         target.stale_bytes_estimate = profile_bytes * target.stale_units as u64 / units as u64;
     }
     Ok((target, sizes))
+}
+
+/// The dir of the checkout `dir` belongs to: the nearest one above it holding a `.git`.
+pub fn checkout_root(dir: &Path) -> Option<&Path> {
+    dir.ancestors().find(|above| above.join(".git").exists())
 }
 
 /// Whether `project` is in a git worktree its repository no longer knows. Cheap enough to

@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -45,6 +46,9 @@ enum Cmd {
         /// Print the inventory as JSON
         #[arg(long)]
         json: bool,
+        /// List every build dir, not only the largest of each checkout and ecosystem
+        #[arg(long)]
+        all: bool,
         /// Also measure the cargo home's unpacked sources, which costs another walk
         /// [default: $CARGO_HOME, else ~/.cargo]
         #[arg(long, value_name = "DIR", num_args = 0..=1, default_missing_value = "")]
@@ -227,9 +231,10 @@ fn main() -> ExitCode {
     let done = match cmd {
         Cmd::Status {
             json,
+            all,
             cargo_home,
             roots,
-        } => status(json, cargo_home, roots).map(|()| Done::Everything),
+        } => status(json, all, cargo_home, roots).map(|()| Done::Everything),
         Cmd::Advise { json, roots } => advise(json, roots).map(|()| Done::Everything),
         Cmd::Run(args) => run(args),
         Cmd::Daemon(cmd) => match cmd {
@@ -369,7 +374,7 @@ fn missing_caps(caps: &dunnage::sys::Caps) -> Option<&'static str> {
     }
 }
 
-fn status(json: bool, home: Option<PathBuf>, roots: Vec<PathBuf>) -> Result<()> {
+fn status(json: bool, all: bool, home: Option<PathBuf>, roots: Vec<PathBuf>) -> Result<()> {
     // The same `roots` key `run` uses; `.` stays the fallback when there is none.
     let roots = roots_or_config(roots)?;
     // Read-only and stateless: no index, so a missing `$HOME` is no reason to stop.
@@ -379,48 +384,58 @@ fn status(json: bool, home: Option<PathBuf>, roots: Vec<PathBuf>) -> Result<()> 
         println!("{}", serde_json::to_string_pretty(&inventory)?);
         return Ok(());
     }
-    print_inventory(&inventory);
+    print_inventory(&inventory, all);
     Ok(())
 }
 
-fn print_inventory(inventory: &Inventory) {
+/// Build dirs listed per checkout and ecosystem without `--all`; the rest are one line.
+const STATUS_LIMIT: usize = 5;
+
+/// Family, then checkout, then a subtotal per ecosystem over its largest build dirs.
+fn print_inventory(inventory: &Inventory, all: bool) {
     let now = session::now_unix();
-    let mut family = None;
+    type Key<'a> = (&'a Option<PathBuf>, &'a Option<PathBuf>, &'static str);
+    let mut groups: BTreeMap<Key, Vec<&Target>> = BTreeMap::new();
     for target in &inventory.targets {
-        if family != Some(&target.family) {
-            family = Some(&target.family);
-            match &target.family {
+        groups
+            .entry((&target.family, &target.checkout, target.ecosystem))
+            .or_default()
+            .push(target);
+    }
+    let (mut family, mut checkout) = (None, None);
+    for ((group_family, group_checkout, ecosystem), mut targets) in groups {
+        if family != Some(group_family) {
+            family = Some(group_family);
+            checkout = None;
+            match group_family {
                 Some(dir) => println!("family {}", dir.display()),
                 None => println!("no family"),
             }
         }
-        let built = target.last_built_unix.map_or("never built".into(), |at| {
-            format!("built {}d ago", now.saturating_sub(at) / SECS_PER_DAY)
-        });
-        let orphaned = if target.orphaned {
-            "  ORPHANED"
-        } else if target.project_gone {
-            "  PROJECT GONE"
-        } else {
-            ""
-        };
-        println!(
-            "  {:>11}  {built:<16}{orphaned}  {}",
-            gib(target.allocated_bytes),
-            target.root.display()
-        );
-        // Only worth a line when something is missing: a filesystem that does both is the
-        // case the numbers above already assume.
-        if let Some(missing) = missing_caps(&target.caps) {
-            println!("  {:>11}  {missing}", "");
+        if checkout != Some(group_checkout) {
+            checkout = Some(group_checkout);
+            match group_checkout {
+                Some(dir) => println!("  checkout {}", dir.display()),
+                None => println!("  no checkout"),
+            }
         }
-        if target.stale_units > 0 {
-            let units: usize = target.toolchains.iter().map(|built| built.units).sum();
+        targets.sort_by(|a, b| (b.allocated_bytes, &a.root).cmp(&(a.allocated_bytes, &b.root)));
+        let bytes: u64 = targets.iter().map(|t| t.allocated_bytes).sum();
+        println!(
+            "    {ecosystem}: {} build dirs, {}",
+            targets.len(),
+            gib(bytes)
+        );
+        let shown = if all { targets.len() } else { STATUS_LIMIT };
+        for target in targets.iter().take(shown) {
+            print_target(target, now);
+        }
+        if targets.len() > shown {
+            let rest = &targets[shown..];
             println!(
-                "  {:>11}  {} of {units} units built by an older rustc ({} toolchains)",
-                format!("~{}", gib(target.stale_bytes_estimate)),
-                target.stale_units,
-                target.toolchains.len()
+                "      {} more, {}: --all lists them",
+                rest.len(),
+                gib(rest.iter().map(|t| t.allocated_bytes).sum())
             );
         }
     }
@@ -445,6 +460,40 @@ fn print_inventory(inventory: &Inventory) {
         gib(sum(|t| t.compressible_bytes)),
         gib(sum(|t| t.dedupe_candidate_bytes))
     );
+}
+
+/// One build dir: size, age, its place in the checkout, and what the passes should know.
+fn print_target(target: &Target, now: u64) {
+    let built = target.last_built_unix.map_or("never built".into(), |at| {
+        format!("built {}d ago", now.saturating_sub(at) / SECS_PER_DAY)
+    });
+    let orphaned = if target.orphaned {
+        "  ORPHANED"
+    } else if target.project_gone {
+        "  PROJECT GONE"
+    } else {
+        ""
+    };
+    let place = target.position.as_ref().unwrap_or(&target.root);
+    println!(
+        "      {:>11}  {built:<16}{orphaned}  {}",
+        gib(target.allocated_bytes),
+        place.display()
+    );
+    // Only worth a line when something is missing: a filesystem that does both is the case the
+    // numbers above already assume.
+    if let Some(missing) = missing_caps(&target.caps) {
+        println!("      {:>11}  {missing}", "");
+    }
+    if target.stale_units > 0 {
+        let units: usize = target.toolchains.iter().map(|built| built.units).sum();
+        println!(
+            "      {:>11}  {} of {units} units built by an older rustc ({} toolchains)",
+            format!("~{}", gib(target.stale_bytes_estimate)),
+            target.stale_units,
+            target.toolchains.len()
+        );
+    }
 }
 
 /// `dunnage advise`: how to print what the session found.

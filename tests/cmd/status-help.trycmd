@@ -9,6 +9,7 @@ Arguments:
 
 Options:
       --json                Print the inventory as JSON
+      --all                 List every build dir, not only the largest of each checkout and ecosystem
       --cargo-home [<DIR>]  Also measure the cargo home's unpacked sources, which costs another walk [default: $CARGO_HOME, else ~/.cargo]
   -h, --help                Print help
 

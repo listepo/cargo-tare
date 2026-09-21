@@ -3,6 +3,5 @@
 - T30.1. Swift: Xcode DerivedData
 - T32.1. C and C++: Ninja and Meson
 - T38.1. Monorepo: an owner for a build dir outside its checkout
-- T39. Monorepo: grouped `status` and `skip-paths`
 - T40. Known build dirs: a persisted inventory
 - T35. Go: `GOCACHE` and `GOMODCACHE`

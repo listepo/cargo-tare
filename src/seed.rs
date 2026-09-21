@@ -33,16 +33,11 @@ pub struct Seeded {
     pub busy: Vec<PathBuf>,
 }
 
-/// The dir of the checkout `dir` belongs to: the nearest one above it holding a `.git`.
-fn checkout_root(dir: &Path) -> Option<&Path> {
-    dir.ancestors().find(|above| above.join(".git").exists())
-}
-
 /// The best build dir to seed from: in the sibling checkouts of the same repository, at the same
 /// place inside them as `checkout` is inside its own, the one built most recently. `None` when
 /// the checkout has no repository, no siblings, or none of them has a build dir there.
 pub fn choose(checkout: &Path, eco: &dyn Ecosystem) -> Option<PathBuf> {
-    let root = checkout_root(checkout)?;
+    let root = inventory::checkout_root(checkout)?;
     // A workspace can sit anywhere inside a checkout; its sibling sits in the same place.
     let relative = checkout.strip_prefix(root).ok()?;
     let common = inventory::family(checkout)?;
@@ -96,7 +91,7 @@ pub fn positions(checkout: &Path) -> Vec<Position> {
                 continue;
             };
             // A worktree nested inside this sibling is a sibling of its own.
-            if checkout_root(&owner.project) != Some(sibling.as_path())
+            if inventory::checkout_root(&owner.project) != Some(sibling.as_path())
                 || eco.build_dir(&owner.project).as_ref() != Some(&build_dir)
             {
                 continue;

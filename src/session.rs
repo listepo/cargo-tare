@@ -31,7 +31,7 @@ use crate::engine::{self, Interrupt, Interrupted, Options, Pass, Report};
 use crate::error::{Error, Result};
 use crate::evict::{self, Evict, Limits};
 use crate::index::HashIndex;
-use crate::inventory::{self, Inventory, ProfileInfo};
+use crate::inventory::{self, Inventory, ProfileInfo, Target};
 use crate::orphans::{self, Orphan, Orphans};
 use crate::seed::{self, Seeded};
 
@@ -127,6 +127,10 @@ pub struct Request {
     pub link_artifacts: bool,
     /// Families to leave alone, by their dir.
     pub skip_families: Vec<PathBuf>,
+    /// Per family, positions inside a checkout to leave alone, as prefixes.
+    pub skip_paths: BTreeMap<PathBuf, Vec<PathBuf>>,
+    /// Per family, the only adapters whose build dirs are worked on.
+    pub family_ecosystems: BTreeMap<PathBuf, Vec<String>>,
     /// Repeat the passes on a group while a round still applies anything, under the same
     /// locks, so one visit leaves nothing for the next.
     pub until_settled: bool,
@@ -155,6 +159,17 @@ impl Request {
                 .filter(|(_, family)| family.skip)
                 .map(|(dir, _)| dir.clone())
                 .collect(),
+            skip_paths: config
+                .family
+                .iter()
+                .filter(|(_, family)| !family.skip_paths.is_empty())
+                .map(|(dir, family)| (dir.clone(), family.skip_paths.clone()))
+                .collect(),
+            family_ecosystems: config
+                .family
+                .iter()
+                .filter_map(|(dir, family)| Some((dir.clone(), family.ecosystems.clone()?)))
+                .collect(),
             ..Self::default()
         }
     }
@@ -171,6 +186,13 @@ impl Request {
             ensure(PASSES.contains(&name.as_str()), || {
                 format!("unknown pass `{name}`")
             })?;
+        }
+        for (family, names) in &self.family_ecosystems {
+            for name in names {
+                ensure(eco::named(name).is_some(), || {
+                    format!("unknown ecosystem `{name}` for family {}", family.display())
+                })?;
+            }
         }
         ensure(
             self.enables(evict::NAME) != (self.evict == Limits::default()),
@@ -191,6 +213,27 @@ impl Request {
 
     fn enables(&self, lossy: &str) -> bool {
         self.lossy.iter().any(|name| name == lossy)
+    }
+
+    /// Whether `target` is worked on at all: its family is not skipped, its position is not,
+    /// and its adapter is one the family allows. A skipped build dir is left out before the lossy
+    /// passes choose, so it is neither touched nor counted.
+    pub fn keeps(&self, target: &Target) -> bool {
+        let family = target.family.as_ref().unwrap_or(&target.root);
+        if self.skip_families.contains(family) {
+            return false;
+        }
+        let skipped = self.skip_paths.get(family).is_some_and(|prefixes| {
+            target
+                .position
+                .as_ref()
+                .is_some_and(|position| prefixes.iter().any(|prefix| position.starts_with(prefix)))
+        });
+        let allowed = self
+            .family_ecosystems
+            .get(family)
+            .is_none_or(|names| names.iter().any(|name| name == target.ecosystem));
+        !skipped && allowed
     }
 }
 
@@ -508,7 +551,7 @@ impl Session {
         ensure(!request.roots.is_empty() || only_home, || {
             "no roots: name them on the command line or set `roots` in the config file".into()
         })?;
-        let inventory = if only_home {
+        let mut inventory = if only_home {
             Inventory::default()
         } else {
             read_inventory(&request.roots)?
@@ -516,6 +559,9 @@ impl Session {
         ensure(!inventory.targets.is_empty() || only_home, || {
             "no cargo target dirs found".into()
         })?;
+        // After the check: a run whose every build dir the config skips has nothing to do, and
+        // that is not a mistake.
+        inventory.targets.retain(|target| request.keeps(target));
         // Everything above only reads. From here on the index is loaded and saved, and the passes
         // change targets: one session at a time.
         let _lock = self.lock()?;
@@ -608,9 +654,6 @@ impl Session {
                 continue;
             };
             let family = target.family.unwrap_or_else(|| target.root.clone());
-            if request.skip_families.contains(&family) {
-                continue;
-            }
             // Not a path: the group is every family at once, and the report says so.
             let key = if request.across_families {
                 PathBuf::from(ACROSS_FAMILIES)

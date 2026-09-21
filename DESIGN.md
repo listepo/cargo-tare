@@ -551,6 +551,11 @@ are not read; a busy profile is skipped; `docs/research.md` measured `incrementa
 
 Read-only: takes no locks and changes nothing, so it is safe next to running builds.
 
+- **Place.** Each build dir carries its adapter, the checkout its project is in (the nearest dir
+  above holding a `.git`), its position inside that checkout, and its guard tier. `status`
+  groups by family, checkout and ecosystem and lists the five largest build dirs of each group
+  (`--all` every one); `--json` stays flat, one entry per build dir.
+
 - **Discovery.** Walk the roots without following symlinks; a dir whose `CACHEDIR.TAG` holds
   cargo's sentence is a target. A found target is not entered, so a target nested inside another
   is part of the outer one. Caches of other tools carry the same tag file and are ignored.
@@ -792,7 +797,7 @@ flags would, lossy passes included only when the config names them.
 
 
 ```
-dunnage status [--json] [--cargo-home [DIR]] [ROOT]...  # inventory, families, potential
+dunnage status [--json] [--all] [--cargo-home [DIR]] [ROOT]...  # inventory, families, potential
                                                           # savings; read-only
 dunnage run [--dry-run] [--lossy <PASS>]... [--index <FILE>] [<ROOT>]...
                [--config <FILE>] [--json]          # file: see below; json: the report as data
@@ -812,10 +817,14 @@ dunnage daemon install [--config <FILE>] [--index <FILE>] [--print] | remove | s
 Config (`src/config.rs`): `$XDG_CONFIG_HOME/dunnage/config.toml`, else
 `~/.config/dunnage/config.toml` — `roots`, `lossy`, `min-age`, `min-size`,
 `[evict] idle-days / max-total-gib / whole-target`, `[incremental] idle-days`, `[index] idle-days`, `[orphans] project-idle-days`,
-`[daemon] interval-secs / rediscover-secs / lock-budget-secs`, `[family."<dir>"] skip`. Keys are
+`[daemon] interval-secs / rediscover-secs / lock-budget-secs`,
+`[family."<dir>"] skip / skip-paths / ecosystems`. Keys are
 kebab-case and unknown ones are an error: a typo that silently does nothing is worse than a stop.
-A flag always wins over the file, and a file named with `--config` must exist. Only `skip` is per
-family, because the other thresholds are decided over everything under the roots at once.
+A flag always wins over the file, and a file named with `--config` must exist. Per family there
+is only what to leave alone — `skip`, `skip-paths` (positions in a checkout, as whole-component
+prefixes, so no glob crate) and `ecosystems` — because the thresholds are decided over
+everything under the roots at once. `Request::keeps` drops a skipped build dir from the
+inventory before any pass chooses, so it is neither worked on nor counted toward the `evict` cap.
 
 Exit codes: `0` done, `1` failed, `2` a profile dir was left alone because a build held its lock,
 or another run of the tool holds the run lock.

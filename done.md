@@ -335,3 +335,49 @@ card allows a first version without it. No signal handling either (it needs a cr
   this machine.
 - `~/.cache/dunnage` and `~/Library/LaunchAgents/dev.dunnage.daemon.plist` are absent; no build
   lock files are left in `$TMPDIR`.
+
+### T39. Monorepo: grouped `status` and `skip-paths`
+
+One line per target stops being a report at a few dozen build dirs. `status` groups family →
+checkout → subtotal per ecosystem, lists the largest build dirs up to a limit and the rest with
+`--all`; `--json` stays flat and gains `ecosystem`, `checkout`, `position` and `guard` per build
+dir, existing keys unchanged. Config gains `skip-paths` per family — positions as prefixes, so
+no glob crate — and a per-family `ecosystems` list narrower than the global one.
+Done: `tests/cmd` snapshots for a fixture with many build dirs; a skipped position is neither
+reported as work nor touched; `docs/usage.md` documents both.
+
+#### Execution plan
+
+1. The inventory's `Target` gains `checkout` (the nearest dir above the project holding a
+   `.git`), `position` (the build dir inside it) and `guard` (`Guard::name` of its first unit);
+   `ecosystem`, skipped until now, is serialized.
+2. `[family."<dir>"]` gains `skip-paths` and `ecosystems`; `Request` carries them,
+   `Request::check` rejects unknown adapter names, and `Request::keeps` drops a skipped build
+   dir from the inventory before any pass chooses.
+3. `status` groups family → checkout → ecosystem with a subtotal, lists the five largest build
+   dirs of each group by position, and the rest with `--all`.
+4. Tests on the monorepo fixture, docs.
+
+#### Result
+
+- As planned. There is no global `ecosystems` key yet, so a family's list narrows the registry.
+- A skipped build dir is out of the inventory before evict, incremental, orphans and doc choose,
+  so it no longer counts toward the `evict` cap. `skip` for a whole family behaves the same way
+  and moved to the same filter.
+- The status snapshot is a Rust test in `tests/monorepo.rs`, not a `tests/cmd` case. A family
+  needs a git repository, and a trycmd fixture cannot commit one. The test compares the whole
+  grouped output, with paths replaced.
+- Docs: README (`status`, the per-family keys), usage, DESIGN.
+
+#### Verified
+
+- `just check` (196 tests) and `just check-cross` pass. The `status --help` snapshot was
+  regenerated for `--all`.
+- `tests/monorepo.rs`:
+  - JSON keys per build dir;
+  - `skip-paths` in every checkout, by whole components, and through a dry run: compress plans
+    less;
+  - `ecosystems` narrowing, and an unknown name refused;
+  - the grouped `status` output with and without `--all`.
+- `src/config.rs`: the new keys parse.
+- `~/.cache/dunnage` is absent.

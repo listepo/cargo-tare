@@ -94,12 +94,18 @@ pub struct Daemon {
 
 /// Only what is decided per family. The `evict` cap and the idle rules are global, because the
 /// passes choose over everything under the roots at once.
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Family {
     /// Leave this family alone entirely.
     #[serde(default)]
     pub skip: bool,
+    /// Leave alone the build dirs at these positions, relative to their checkout: a position
+    /// that starts with one of them, whole components, is skipped in every checkout.
+    #[serde(default)]
+    pub skip_paths: Vec<PathBuf>,
+    /// Only these adapters' build dirs, by name; every adapter when not set.
+    pub ecosystems: Option<Vec<String>>,
 }
 
 impl Config {
@@ -177,7 +183,10 @@ mod tests {
              [index]\n\
              idle-days = 90\n\
              [family.\"/a/repo\"]\n\
-             skip = true\n",
+             skip = true\n\
+             [family.\"/a/mono\"]\n\
+             skip-paths = [\"vendor\"]\n\
+             ecosystems = [\"cargo\"]\n",
         )
         .unwrap();
 
@@ -192,5 +201,8 @@ mod tests {
         assert_eq!(config.index.idle_days, Some(90));
         assert!(config.skips(Path::new("/a/repo")));
         assert!(!config.skips(Path::new("/a/other")));
+        let mono = &config.family[Path::new("/a/mono")];
+        assert_eq!(mono.skip_paths, [PathBuf::from("vendor")]);
+        assert_eq!(mono.ecosystems.as_deref(), Some(&["cargo".to_owned()][..]));
     }
 }

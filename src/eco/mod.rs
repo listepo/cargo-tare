@@ -108,6 +108,19 @@ pub enum Guard {
     Immutable,
 }
 
+impl Guard {
+    /// The tier, as a report names it.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Held => "held",
+            Self::Lock(_) => "lock",
+            Self::Shared(_) => "shared",
+            Self::Quiet => "quiet",
+            Self::Immutable => "immutable",
+        }
+    }
+}
+
 /// What may be done to the files of a unit beyond rewriting them in place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Policy {

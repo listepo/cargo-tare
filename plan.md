@@ -2,7 +2,7 @@
 
 https://github.com/listepo/dunnage
 
-A tool (a CLI, and a daemon to come) that shrinks live `target/` directories without slowing
+A tool (a CLI and a daemon) that shrinks live `target/` directories without slowing
 builds: transparent filesystem compression, copy-on-write dedupe across targets, clone-seeding
 of new worktrees, and opt-in removal of orphaned or idle targets — planned together so the
 approaches reinforce each other. Called `cargo-tare` until T42.
@@ -15,7 +15,6 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | T30.1 | todo | P2 | 3 | 0% | |
 | T32.1 | todo | P2 | 2 | 0% | |
 | T38.1 | todo | P2 | 3 | 0% | |
-| T39 | todo | P3 | 2 | 0% | |
 | T40 | todo | P3 | 3 | 0% | |
 | T35 | todo | P3 | 2 | 0% | |
 
@@ -145,16 +144,6 @@ gone, with a fixture test for both.
 build, but it is parsing cargo's output, a heuristic; (b) a record dunnage writes itself when
 `seed`/`worktree add`/the daemon sees a build dir being used from a workspace — exact, but only
 for dirs it has seen; (c) configuration: `[owners]` mapping build dirs to workspaces.
-
-### T39. Monorepo: grouped `status` and `skip-paths`
-
-One line per target stops being a report at a few dozen build dirs. `status` groups family →
-checkout → subtotal per ecosystem, lists the largest build dirs up to a limit and the rest with
-`--all`; `--json` stays flat and gains `ecosystem`, `checkout`, `position` and `guard` per build
-dir, existing keys unchanged. Config gains `skip-paths` per family — positions as prefixes, so
-no glob crate — and a per-family `ecosystems` list narrower than the global one.
-Done: `tests/cmd` snapshots for a fixture with many build dirs; a skipped position is neither
-reported as work nor touched; `docs/usage.md` documents both.
 
 ### T40. Known build dirs: a persisted inventory
 
