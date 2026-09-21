@@ -104,7 +104,11 @@ pub fn inventory_of(found: Vec<(PathBuf, &'static dyn Ecosystem)>) -> io::Result
     let mut targets = Vec::new();
     let mut sizes = Vec::new();
     for (root, eco) in found {
-        let (target, target_sizes) = inspect(&root, eco)?;
+        // A dir from the known list may have been removed since; it is simply no longer there.
+        let (target, target_sizes) = match inspect(&root, eco) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            done => done?,
+        };
         targets.push(target);
         sizes.push(target_sizes);
     }

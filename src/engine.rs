@@ -699,15 +699,19 @@ fn apply_compress(
         }
     }
     // A dir left writable is what its tool set out to prevent: the run stops and says where.
+    // Every dir is put back before the first failure is told.
+    let mut first = None;
     for (dir, mode) in lifted {
-        sys::set_mode(&dir, mode).map_err(|e| {
-            io::Error::new(
-                e.kind(),
-                format!("{}: putting its mode {mode:o} back: {e}", dir.display()),
-            )
-        })?;
+        if let Err(e) = sys::set_mode(&dir, mode) {
+            first.get_or_insert_with(|| {
+                io::Error::new(
+                    e.kind(),
+                    format!("{}: putting its mode {mode:o} back: {e}", dir.display()),
+                )
+            });
+        }
     }
-    Ok(())
+    first.map_or(Ok(()), Err)
 }
 
 /// Lifts the owner write bit of every read-only dir that holds a member of `batch`, so a temp

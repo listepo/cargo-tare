@@ -43,17 +43,23 @@ impl Ecosystem for Dotnet {
         Some(Owner { project })
     }
 
-    /// The project file restore recorded. A project dir holds any number of them; the one whose
-    /// build this is, is the one `obj/` names.
+    /// The project file restore recorded. A project dir holds any number of them, and `obj/`
+    /// keeps the record of a project renamed since: an existing one wins, so the project counts
+    /// as gone only when every project file restore recorded is.
     fn manifest(&self, project: &Path) -> Option<PathBuf> {
-        fs::read_dir(project.join(OBJ))
+        let mut recorded: Vec<PathBuf> = fs::read_dir(project.join(OBJ))
             .ok()?
             .filter_map(|entry| {
                 let name = entry.ok()?.file_name();
                 let file = name.to_str()?.strip_suffix(DGSPEC_SUFFIX)?;
                 Some(project.join(file))
             })
-            .min()
+            .collect();
+        recorded.sort();
+        let existing = recorded
+            .iter()
+            .position(|file| fs::symlink_metadata(file).is_ok());
+        recorded.into_iter().nth(existing.unwrap_or(0))
     }
 
     /// The whole dir: MSBuild writes all of it in one build, and nothing guards a part of it.

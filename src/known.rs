@@ -63,9 +63,11 @@ pub fn discover(
     {
         return (found, false);
     }
+    // Read before the walk: a root that changes while it runs must not look walked.
+    let mtimes = roots.iter().map(|root| mtime(root)).collect();
     let found = eco::discover(roots);
     // A list that cannot be written costs the next run a walk, nothing more.
-    let _ = save(file, roots, &found, now);
+    let _ = save(file, roots, mtimes, &found, now);
     (found, true)
 }
 
@@ -90,11 +92,17 @@ fn load(file: &Path, roots: &[PathBuf], every: Duration, now: u64) -> Option<Fou
 }
 
 /// Written whole and renamed into place, so a run never reads half a list.
-fn save(file: &Path, roots: &[PathBuf], found: &Found, now: u64) -> io::Result<()> {
+fn save(
+    file: &Path,
+    roots: &[PathBuf],
+    root_mtimes: Vec<Option<u64>>,
+    found: &Found,
+    now: u64,
+) -> io::Result<()> {
     let known = Known {
         roots: roots.to_vec(),
         walked_unix: now,
-        root_mtimes: roots.iter().map(|root| mtime(root)).collect(),
+        root_mtimes,
         dirs: found
             .iter()
             .map(|(dir, eco)| (dir.clone(), eco.name().to_owned()))

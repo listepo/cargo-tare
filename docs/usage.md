@@ -75,8 +75,10 @@ so nothing is rebuilt. A lossy pass removes only what cargo can build again, onl
 it, and prints every removal with its reason — on `--dry-run` too. Only `target/` contents are
 ever removed; sources are never touched.
 
-Every pass takes cargo's own build lock. A profile dir with a build running is skipped and
-reported, and the exit code says so.
+Every pass takes the build tool's own lock where it has one: cargo's per profile dir, and the
+one `swift build` takes for a SwiftPM package. A unit with a build running is skipped and
+reported, and the exit code says so. Build systems without such a lock (.NET, CMake, Xcode) get
+weaker checks instead: `DESIGN.md`, "Safety tier without a build lock".
 
 SwiftPM packages go through the same passes as cargo targets, under the lock `swift build`
 takes: `status` lists a `.build` dir next to a `Package.swift`, `run` compresses and dedupes its
@@ -208,7 +210,7 @@ FILE] [--json]` says whether the unit is installed and prints the state file.
 | --- | --- |
 | `0` | everything planned was done |
 | `1` | the run failed: bad flags, bad config, I/O |
-| `2` | at least one profile dir was skipped because a build held its lock — run again later |
+| `2` | at least one profile dir was skipped because a build held its lock, or another run of the tool (a manual one or the daemon) held the run lock — run again later |
 
 ## Recipes
 

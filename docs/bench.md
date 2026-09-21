@@ -293,7 +293,7 @@ compilation off. The two are complementary, and nothing in `dunnage` conflicts w
   hundred KiB: it proves the passes safe (the next `dotnet build` copies and compiles nothing),
   not what they are worth.
 
-- **Seeded worktree** — `dunnage seed` does not exist yet (T8).
+- **Seeded worktree** — not measured yet.
 - **Shared `build-dir`** — cargo's `build.build-dir` is nightly-only (`-Z build-dir`); this
   machine builds on stable, where the key is ignored. T12's `advise` reports exactly that.
 - **One workspace, one machine.** Every number above is that one workspace on one Apple Silicon laptop.

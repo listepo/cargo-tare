@@ -617,8 +617,11 @@ impl Session {
         // Artifacts are only linked when the user asks; the cargo home's unpacked sources are
         // always safe to link, because cargo replaces a source dir instead of rewriting its files.
         let mut home_dedupe = Dedupe::new(&index);
-        dedupe.link_fallback = CARGO.policy().share.links(request.link_artifacts);
-        home_dedupe.link_fallback = Home::POLICY.share.links(request.link_artifacts);
+        // Set again for each group from its own adapter: only cargo's targets may opt in.
+        let links = |eco: &dyn Ecosystem| eco.policy().share.links(request.link_artifacts);
+        home_dedupe
+            .link_fallback
+            .set(Home::POLICY.share.links(request.link_artifacts));
         if let Some(min_age) = request.min_age {
             (compress.min_age, dedupe.min_age) = (min_age, min_age);
             home_dedupe.min_age = min_age;
@@ -725,6 +728,7 @@ impl Session {
             if control.stopped() {
                 break;
             }
+            dedupe.link_fallback.set(links(*eco));
             let done = visit(
                 group,
                 profile_dirs,
@@ -742,6 +746,7 @@ impl Session {
             if control.stopped() {
                 break;
             }
+            dedupe.link_fallback.set(links(eco));
             let done = visit(
                 group,
                 profile_dirs,
@@ -835,7 +840,7 @@ impl Session {
         }
         report.stopped = control.stopped();
         report.compress_notes = compress.notes();
-        report.files_hashed = dedupe.hashed();
+        report.files_hashed = dedupe.hashed() + home_dedupe.hashed();
         // The index only caches hashes of files as they are, so it is worth keeping on a dry run too.
         self.save(&mut index.borrow_mut())?;
         Ok(report)

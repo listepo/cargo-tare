@@ -40,12 +40,21 @@ pub struct Entry {
     pub shared: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 struct Slot {
     entry: Entry,
     /// Seconds since the epoch of the last lookup. A `Cell`, so a lookup through `&self` counts.
     seen: Cell<u64>,
 }
+
+/// Equal when the entries are: when each was last looked up is not part of the content.
+impl PartialEq for Slot {
+    fn eq(&self, other: &Self) -> bool {
+        self.entry == other.entry
+    }
+}
+
+impl Eq for Slot {}
 
 /// Equal when the entries are: when each was loaded is not part of the content.
 #[derive(Debug, Default)]

@@ -228,3 +228,20 @@ fn after_dedupe_and_compress_msbuild_builds_nothing_and_the_app_runs() {
         .unwrap();
     assert!(builds_anything(&root));
 }
+
+/// `obj/` keeps the restore record of a project renamed since. The project file that still exists
+/// is the manifest, whatever the names' order, so the project does not read as gone.
+#[test]
+fn a_renamed_project_file_is_found_past_the_old_record() {
+    let (_tmp, root) = root();
+    let app = project(&root, APP);
+    fs::write(app.join("obj/Aaa.csproj.nuget.dgspec.json"), "{}").unwrap();
+    assert_eq!(DOTNET.manifest(&app), Some(app.join("App.csproj")));
+
+    fs::remove_file(app.join("App.csproj")).unwrap();
+    let gone = DOTNET.manifest(&app).unwrap();
+    assert!(
+        !gone.exists(),
+        "every recorded project file is gone: {gone:?}"
+    );
+}

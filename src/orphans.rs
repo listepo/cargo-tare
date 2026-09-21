@@ -87,7 +87,9 @@ impl Pass for Orphans {
                     .map(|p| p.last_used)
                     .max()
                     .flatten();
-                fs::symlink_metadata(manifest).is_err()
+                // Gone, not merely unreadable: a permission or I/O error keeps the target.
+                fs::symlink_metadata(manifest)
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
                     && last.is_some_and(|built| {
                         self.now_unix.saturating_sub(built)
                             >= idle_days.saturating_mul(SECS_PER_DAY)

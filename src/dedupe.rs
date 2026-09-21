@@ -32,8 +32,9 @@ pub struct Dedupe<'a> {
     /// Where the filesystem cannot share blocks, share the inode instead. True for the cargo
     /// home's unpacked sources, which cargo never rewrites in place; for a target dir only when
     /// the user asks with `--link-artifacts`, because rustc truncates its outputs and would
-    /// rewrite every name pointing at the same inode. See [`Share::Link`].
-    pub link_fallback: bool,
+    /// rewrite every name pointing at the same inode. See [`Share::Link`]. A `Cell`, so a run
+    /// sets it per group, from the adapter whose build dirs the group holds.
+    pub link_fallback: Cell<bool>,
     index: &'a RefCell<HashIndex>,
     hashed: Cell<usize>,
 }
@@ -44,7 +45,7 @@ impl<'a> Dedupe<'a> {
         Self {
             min_size: DEFAULT_MIN_SIZE,
             min_age: DEFAULT_MIN_AGE,
-            link_fallback: false,
+            link_fallback: Cell::new(false),
             index,
             hashed: Cell::new(0),
         }
@@ -64,7 +65,7 @@ impl<'a> Dedupe<'a> {
         if sys::caps(&profile.dir).clone {
             Some(Share::Clone)
         } else {
-            self.link_fallback.then_some(Share::Link)
+            self.link_fallback.get().then_some(Share::Link)
         }
     }
 

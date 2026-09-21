@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
 
-use crate::eco::{self, Ecosystem};
+use crate::eco::{self, Ecosystem, Guard};
 use crate::engine::ProfileLock;
 use crate::index::HashIndex;
 use crate::inventory;
@@ -177,10 +177,25 @@ pub fn seed(
         shared_blocks: crate::sys::caps(checkout).clone,
         ..Seeded::default()
     };
+    // A guard shared by several units is tried once, as the engine does: a second try from this
+    // process would find it held by the first.
+    let mut shared: Vec<(Guard, bool)> = Vec::new();
     for dir in eco.units(source)? {
-        match ProfileLock::try_guard(&eco.guard(&dir))? {
-            Some(lock) => locks.push((dir, lock)),
-            None => seeded.busy.push(dir),
+        let guard = eco.guard(&dir);
+        let held = match shared.iter().find(|(seen, _)| *seen == guard) {
+            Some(&(_, held)) => held,
+            None => {
+                let lock = ProfileLock::try_guard(&guard)?;
+                let held = lock.is_some();
+                locks.extend(lock);
+                if matches!(guard, Guard::Shared(_)) {
+                    shared.push((guard, held));
+                }
+                held
+            }
+        };
+        if !held {
+            seeded.busy.push(dir);
         }
     }
 
