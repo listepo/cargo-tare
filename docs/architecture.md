@@ -206,36 +206,31 @@ front ends, each a thin caller of Session
     embedding  a build system, for the one build dir whose lock it already holds (later)
 ```
 
-**What is wrong for this today.** The library has the passes and the engine, but the *run* is in
-the binary: `src/main.rs` is 806 lines, and `fn run` alone (lines 468–714) selects the passes,
-groups targets into families, picks what `evict` and `orphans` take, runs the cargo home as a
-group of its own, loads and saves the hash index and decides the exit code. `status`, `advise`
-and `seed_into` assemble their results there too. A daemon that shares "as much as possible"
-would today share everything except the part that matters. `config.rs` in the library reads
-`XDG_CONFIG_HOME` and returns `anyhow` errors, and `cargo_home::path` reads `CARGO_HOME` — fine
-for a CLI, wrong for a caller that has its own idea of where things are.
-
-**The shared surface** (T36):
+**Where this stands.** Done in T36: the run moved out of `src/main.rs` into `src/session.rs`,
+and the binary is parsing, printing and the exit code. What landed, in short (`DESIGN.md`,
+"Session", has the rest):
 
 ```rust
-pub struct Session { /* config, hash index, run lock, registry of adapters */ }
+pub struct Session { settings: Settings }             // the index path; the run lock next to it
 
 impl Session {
-    pub fn open(settings: Settings) -> Result<Self, Error>;      // explicit paths, no env reads
-    pub fn inventory(&self, scope: &Scope) -> Result<Inventory, Error>;
-    pub fn advise(&self, scope: &Scope) -> Result<Vec<Finding>, Error>;
-    /// Read-only; what `--dry-run` prints.
-    pub fn plan(&self, request: &Request) -> Result<Plan, Error>;
-    pub fn apply(&mut self, plan: Plan, control: &Control) -> Result<Report, Error>;
-    pub fn seed(&mut self, request: &SeedRequest) -> Result<Seeded, Error>;
+    pub fn open(settings: Settings) -> Self;
+    pub fn inventory(&self, roots: &[PathBuf], cargo_home: Option<&Path>) -> Result<Inventory>;
+    pub fn advise(&self, roots: &[PathBuf], cargo_home: Option<&Path>) -> Result<Advice>;
+    pub fn plan(&self, request: &Request, control: &Control) -> Result<RunReport>;  // dry run
+    pub fn apply(&self, request: &Request, control: &Control) -> Result<RunReport>;
+    pub fn seed(&self, checkout: &Path, from: Option<&Path>, dry_run: bool) -> Result<Seeding>;
 }
 
-pub struct Request { pub scope: Scope, pub passes: Vec<PassName>, pub lossy: Vec<PassName>,
-                     pub limits: Limits, pub until_settled: bool /* T25 */ }
-pub struct Control<'a> { pub observer: &'a dyn Observer,   // progress and notes, as data
-                         pub stop: &'a AtomicBool,          // checked between groups of actions
-                         pub lock_budget: Option<Duration> } // longest a build lock is held
+pub struct Control<'a> { pub observer: &'a dyn Observer,     // each group, before and after
+                         pub stop: Option<&'a AtomicBool>,    // checked between two actions
+                         pub lock_budget: Option<Duration> }  // longest a group holds its locks
 ```
+
+`plan` is a dry run of the same pipeline rather than a `Plan` value handed to `apply`: each pass
+plans on what the pass before it left behind, so a plan made up front would be wrong by the
+second pass. `Request` holds what flags and config ask for today; `until_settled` joins it with
+T25, and a `Scope` in place of `roots` with the adapters (T28).
 
 Rules that keep all three front ends possible, each of them checkable:
 
@@ -251,7 +246,8 @@ Rules that keep all three front ends possible, each of them checkable:
   wrong place.
 - Synchronous API, `rayon` inside, no async runtime: a build system that embeds the library
   brings its own, or none.
-- The run lock (one file next to the hash index, `try_lock`) is taken by `Session::apply`. CLI
+- The run lock (one file next to the hash index, `try_lock`) is taken by `plan`, `apply` and
+  `seed`. CLI
   and daemon are two processes on one machine and must not work on the same files at once;
   `Quiet` and `Immutable` units have no build lock that would keep them apart. There is **no
   IPC**: the two coordinate through that lock and through files — the hash index, the daemon's
@@ -278,7 +274,7 @@ What the earlier arguments still demand of it:
 - **A build must never wait for the daemon.** Cargo blocks on `.cargo-lock`; a user who started
   a CLI run knows why, a user with a daemon does not. Hence `lock_budget`: the engine stops
   taking new actions for a unit once the budget is spent, releases the lock and comes back in a
-  later round. The CLI gets the same knob; the daemon sets it low by default.
+  later round. The session has the knob; the CLI leaves it unset, the daemon sets it low.
 - **Lossy passes run from the daemon only when the config enables them**, exactly as from a
   scheduled CLI run. No trigger turns one on.
 - **Low priority** is the service unit's job (`Nice`, `LowPriorityIO`, `IOSchedulingClass=idle`),

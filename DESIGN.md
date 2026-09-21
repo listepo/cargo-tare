@@ -204,6 +204,36 @@ next run joins them again.
 After a group is replaced the engine calls `Pass::replaced(replace, new_stamp)`, so a pass can
 keep its own bookkeeping about the inode that now sits at the member's paths.
 
+`engine::run_with` takes an `Interrupt`: a stop flag and a deadline, looked at before every
+action and every compress batch. When either says so the run stops starting new work, releases
+its locks and says why in `Report::interrupted`. Every action is whole, so what it leaves behind
+is old or new, never half of either.
+
+## Session (`src/session.rs`)
+
+The run above one engine call, shared by every front end: the CLI today, the daemon (T34), an
+embedding build system later (R8). `main.rs` only parses flags, merges them over the config into
+a `Request`, prints what the session returns and picks the exit code.
+
+- `Session::open(Settings)` — `Settings` names the hash index; the run lock `run.lock` sits
+  next to it. The library reads no environment and no config file on its own:
+  `session::default_index`, `config::default_path` and `cargo_home::path` resolve them for a
+  front end that wants the defaults.
+- `inventory` and `advise` only read and take no lock.
+- `plan` (a dry run) and `apply` check the `Request` (pass names, each lossy pass with its
+  threshold), read the inventory, then take the run lock, load the index, choose what the lossy
+  passes take, and run the engine once per group — per family, or one group across families —
+  plus the cargo home under its own lock. The index is saved before the lock is released.
+  `seed` takes the same lock. A second session gets `Error::RunLockHeld` and the CLI exits 2:
+  a manual run and the daemon coordinate through that file, without IPC.
+- `Control` steers a run from outside: an `Observer` hears each group before and after (the CLI
+  prints its table from there), `stop` ends the run between two actions, and `lock_budget`
+  bounds how long a group's build locks are held — a group out of budget lets go, so a build
+  waiting on its lock gets it, and is visited once more after the other groups; what is still
+  left then counts as busy. The CLI sets neither.
+- One `Error` type (`src/error.rs`). `anyhow` and `clap` belong to the binary behind the default
+  `cli` feature; `cargo check --lib --no-default-features` is part of `just check`.
+
 ## Dedupe pass and hash index (`src/dedupe.rs`, `src/index.rs`)
 
 Works across every profile dir given to one run; give two worktrees' targets together to share
@@ -564,7 +594,8 @@ kebab-case and unknown ones are an error: a typo that silently does nothing is w
 A flag always wins over the file, and a file named with `--config` must exist. Only `skip` is per
 family, because the other thresholds are decided over everything under the roots at once.
 
-Exit codes: `0` done, `1` failed, `2` a profile dir was left alone because a build held its lock.
+Exit codes: `0` done, `1` failed, `2` a profile dir was left alone because a build held its lock,
+or another run of the tool holds the run lock.
 A scheduled run needs that difference; anything else it wants is in `--json`, which prints the
 groups, the busy dirs, the per-pass counts, every removal with its reason and every skip.
 

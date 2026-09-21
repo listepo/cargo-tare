@@ -8,7 +8,8 @@
 use std::fs::{self, File, FileTimes, TryLockError};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
 
 use crate::model::{self, CARGO_LOCK_FILE, Inode, Profile, Stamp, TMP_PREFIX};
 use crate::sys::{self, COMPRESSED};
@@ -138,6 +139,41 @@ pub struct Report {
     pub busy: Vec<PathBuf>,
     pub temps_removed: usize,
     pub passes: Vec<PassReport>,
+    /// Set when the run let go before its plan was done; the rest was never started.
+    pub interrupted: Option<Interrupted>,
+}
+
+/// Why a run let go of its locks early.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Interrupted {
+    /// The caller raised its stop flag.
+    Stopped,
+    /// The locks were held for as long as the caller allowed.
+    OutOfBudget,
+}
+
+/// When a run has to let go, checked between two actions and between two compress batches:
+/// every action is a whole replacement or removal, so what a run leaves behind is old or new,
+/// never half of either.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Interrupt<'a> {
+    pub stop: Option<&'a AtomicBool>,
+    pub deadline: Option<Instant>,
+}
+
+impl Interrupt<'_> {
+    fn due(&self) -> Option<Interrupted> {
+        if self.stop.is_some_and(|stop| stop.load(Ordering::Relaxed)) {
+            Some(Interrupted::Stopped)
+        } else if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            Some(Interrupted::OutOfBudget)
+        } else {
+            None
+        }
+    }
 }
 
 /// Delete `dir` whole and account for it, unless the caller's guard already refused it.
@@ -207,6 +243,17 @@ pub fn run(
     opts: &Options,
     locks_of: Locks<'_>,
 ) -> io::Result<Report> {
+    run_with(profile_dirs, passes, opts, locks_of, Interrupt::default())
+}
+
+/// [`run`], letting go early when `interrupt` says so.
+pub fn run_with(
+    profile_dirs: &[PathBuf],
+    passes: &[&dyn Pass],
+    opts: &Options,
+    locks_of: Locks<'_>,
+    interrupt: Interrupt<'_>,
+) -> io::Result<Report> {
     // Sorted order, so two concurrent runs cannot take the same locks in opposite order.
     let mut dirs = profile_dirs.to_vec();
     dirs.sort();
@@ -255,6 +302,10 @@ pub fn run(
         let mut removal_tried = false;
         let mut to_compress = Vec::new();
         for action in pass.plan(&profiles) {
+            if let Some(why) = interrupt.due() {
+                report.interrupted = Some(why);
+                break;
+            }
             let bytes = match &action {
                 Action::Replace(replace) => replace.member.allocated,
                 Action::Compress(inode) => inode.allocated,
@@ -310,7 +361,15 @@ pub fn run(
             }
         }
         for batch in to_compress.chunks(COMPRESS_BATCH) {
+            if let Some(why) = interrupt.due() {
+                report.interrupted = Some(why);
+                break;
+            }
             apply_compress(batch, &locked, *pass, passes, &mut pass_report);
+        }
+        if report.interrupted.is_some() {
+            report.passes.push(pass_report);
+            break;
         }
         // A removal that failed half way has changed the dir too.
         if pass_report.applied > 0 || removal_tried {

@@ -6,9 +6,20 @@ rust-version = "1.98"
 description = "Shrink Cargo target directories without slowing builds"
 publish = false
 
+# The binary is a front end; the library builds without its dependencies, so a build system
+# can embed it (`cargo check --lib --no-default-features`).
+[features]
+default = ["cli"]
+cli = ["dep:anyhow", "dep:clap"]
+
+[[bin]]
+name = "dunnage"
+path = "src/main.rs"
+required-features = ["cli"]
+
 [dependencies]
-anyhow = "1.0.104"
-clap = { version = "4.6.7", features = ["derive"] }
+anyhow = { version = "1.0.104", optional = true }
+clap = { version = "4.6.7", features = ["derive"], optional = true }
 rayon = "1.12.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

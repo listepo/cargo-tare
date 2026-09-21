@@ -11,7 +11,6 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
 | T24 | todo | P1 | 3 | 0% | |
-| T36 | todo | P1 | 4 | 0% | |
 | T21 | todo | P2 | 5 | 0% | |
 | T25 | todo | P2 | 2 | 0% | |
 | T26 | todo | P2 | 2 | 0% | |
@@ -30,8 +29,7 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | T35 | todo | P3 | 2 | 0% | |
 
 Blockers, take these first. **T24** blocks T21: nothing on Windows can be tested without it.
-**T36** blocks T25, T26, T28 and T34: the run has to live in the library before anything new is
-added to it, or the daemon shares nothing. **T28** blocks T29–T33, T35 and T37–T40: every
+**T28** blocks T29–T33, T35 and T37–T40: every
 adapter and every monorepo behavior sits on its boundary. **T29** blocks T31, T32, T33 and the
 Xcode half of T30, which have no build lock to take. **T33** blocks T35. T41 is free. T35 is the
 lowest priority in the plan by the creator's word: take it only when nothing else is free.
@@ -63,31 +61,6 @@ Done: the existing suite runs on NTFS in the VM and the result is recorded; the 
 test known to fail there (`clone_file` is `fs::copy` where `caps` says no clones — T21's
 analysis, point 2) is fixed by returning `Unsupported`; `AGENTS.md` says how to bring the VM up
 and run the suite on either volume. No FFI in this task.
-
-### T36. Library boundary: one `Session` under every front end
-
-The blocker of everything the creator decided about how the tool runs: CLI and daemon share
-the code, and embedding in a build system stays possible. Today the library holds the passes
-and the engine but the *run* lives in the binary — `src/main.rs` is 806 lines, and `fn run`
-alone (468–714) selects passes, groups families, picks what `evict` and `orphans` take, runs the
-cargo home, loads and saves the hash index and decides the exit code; `status`, `advise` and
-`seed_into` assemble their results there too. A daemon could share none of that.
-
-Move it behind `Session` as sketched in `docs/architecture.md`, "Process model": `open`,
-`inventory`, `advise`, `plan`, `apply`, `seed`; a `Request` both front ends build; a `Control`
-with an `Observer` for progress and notes, a `stop` flag checked between groups of actions, and
-a `lock_budget` after which the engine releases a unit's build lock and returns to it later.
-The session takes the tool's own run lock (one file next to the hash index, `try_lock`, exit
-code 2 for the CLI when held). The library stops printing, exiting and reading the environment
-or config files on its own — `Settings` carries the paths, the resolving helpers stay as
-functions a front end calls — and returns a typed `Error`; `anyhow` and `clap` move behind a
-default `cli` feature that the `[[bin]]` requires. No workspace and no second crate.
-
-No new behavior. Done: `main.rs` is parsing, printing and the exit code; every `tests/cmd`
-snapshot and `tests/cli.rs` case is unchanged; `cargo check --lib --no-default-features` is part
-of `just check`; a test drives a whole run through `Session` with no binary involved; two
-sessions applying at once are serialized by the run lock; a `stop` raised mid-run leaves every
-file either old or new; `DESIGN.md` gains the session next to "Engine".
 
 ### T21. Windows: NTFS compression and ReFS block cloning
 

@@ -5,9 +5,13 @@ use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
-use dunnage::engine::{self, Action, Locks, Options, Pass, Replace, Report, Share, Skip};
+use dunnage::engine::{
+    self, Action, Interrupt, Interrupted, Locks, Options, Pass, Replace, Report, Share, Skip,
+};
+use dunnage::model::Stamp;
 use dunnage::model::{self, CARGO_LOCK_FILE, Profile, TMP_PREFIX};
 use tempfile::TempDir;
 
@@ -407,4 +411,64 @@ fn running_build_is_not_disturbed_and_replaced_artifacts_stay_fresh() {
     assert_ne!(ino(&profile.join(BIN)), old_ino);
 
     fixture.assert_fresh(&target);
+}
+
+/// Replaces `member` and `second` with clones of `canon`, and raises `stop` after the first.
+struct StopAfterOne<'a> {
+    stop: &'a AtomicBool,
+}
+
+impl Pass for StopAfterOne<'_> {
+    fn name(&self) -> &'static str {
+        "test"
+    }
+    fn plan(&self, profiles: &[Profile]) -> Vec<Action> {
+        let mut actions = replace_by_name(profiles, "canon", "member");
+        actions.extend(replace_by_name(profiles, "canon", "second"));
+        actions
+    }
+    fn replaced(&self, _replace: &Replace, _new: &Stamp) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+#[test]
+fn a_stop_raised_mid_run_leaves_every_file_old_or_new() {
+    let (_tmp, dir) = profile();
+    let second = dir.join("deps/second");
+    fs::write(&second, CONTENT).unwrap();
+    let (member_ino, second_ino) = (ino(&dir.join("deps/member")), ino(&second));
+    let stop = AtomicBool::new(false);
+    let pass = StopAfterOne { stop: &stop };
+    let interrupt = Interrupt {
+        stop: Some(&stop),
+        ..Interrupt::default()
+    };
+
+    let report = run_unbusy(|| {
+        engine::run_with(
+            std::slice::from_ref(&dir),
+            &[&pass],
+            &Options::default(),
+            Locks::PerDir,
+            interrupt,
+        )
+        .unwrap()
+    });
+
+    assert_eq!(report.interrupted, Some(Interrupted::Stopped));
+    assert_eq!(report.passes[0].applied, 1, "{report:?}");
+    // The first file is new, the second is the old one, and both hold the same bytes.
+    assert_ne!(ino(&dir.join("deps/member")), member_ino);
+    assert_eq!(ino(&second), second_ino);
+    assert_eq!(fs::read(dir.join("deps/member")).unwrap(), CONTENT);
+    assert_eq!(fs::read(&second).unwrap(), CONTENT);
+    let leftovers = fs::read_dir(dir.join("deps"))
+        .unwrap()
+        .filter(|entry| {
+            let name = entry.as_ref().unwrap().file_name();
+            name.to_string_lossy().starts_with(TMP_PREFIX)
+        })
+        .count();
+    assert_eq!(leftovers, 0, "no temp file is left behind");
 }

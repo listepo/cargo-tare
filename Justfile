@@ -2,6 +2,7 @@
 check:
     cargo fmt --check
     cargo clippy --all-targets -- -D warnings
+    cargo check --lib --no-default-features
     cargo test
 
 # The other two platforms compile. Only `src/sys/` differs between them, and only a build says

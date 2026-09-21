@@ -977,3 +977,48 @@ the creator's to change.
 
 Verified on macOS: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
 `cargo test` (128 passed, one of them new) and both `check-cross` targets.
+
+### T36. Library boundary: one `Session` under every front end
+
+The blocker of everything the creator decided about how the tool runs: CLI and daemon share
+the code, and embedding in a build system stays possible. Today the library holds the passes
+and the engine but the *run* lives in the binary — `src/main.rs` is 806 lines, and `fn run`
+alone (468–714) selects passes, groups families, picks what `evict` and `orphans` take, runs the
+cargo home, loads and saves the hash index and decides the exit code; `status`, `advise` and
+`seed_into` assemble their results there too. A daemon could share none of that.
+
+Move it behind `Session` as sketched in `docs/architecture.md`, "Process model": `open`,
+`inventory`, `advise`, `plan`, `apply`, `seed`; a `Request` both front ends build; a `Control`
+with an `Observer` for progress and notes, a `stop` flag checked between groups of actions, and
+a `lock_budget` after which the engine releases a unit's build lock and returns to it later.
+The session takes the tool's own run lock (one file next to the hash index, `try_lock`, exit
+code 2 for the CLI when held). The library stops printing, exiting and reading the environment
+or config files on its own — `Settings` carries the paths, the resolving helpers stay as
+functions a front end calls — and returns a typed `Error`; `anyhow` and `clap` move behind a
+default `cli` feature that the `[[bin]]` requires. No workspace and no second crate.
+
+No new behavior. Done: `main.rs` is parsing, printing and the exit code; every `tests/cmd`
+snapshot and `tests/cli.rs` case is unchanged; `cargo check --lib --no-default-features` is part
+of `just check`; a test drives a whole run through `Session` with no binary involved; two
+sessions applying at once are serialized by the run lock; a `stop` raised mid-run leaves every
+file either old or new; `DESIGN.md` gains the session next to "Engine".
+
+Result. `src/session.rs` holds the run: `Session::{open, inventory, advise, plan, apply, seed}`,
+`Request` (with `from_config` and `check`), `Control` (`Observer`, `stop`, `lock_budget`),
+`RunReport`, `Advice`, `Seeding`, and the run lock `run.lock` next to the hash index, taken by
+`plan`, `apply` and `seed` after the read-only checks, so a mistyped flag touches no state.
+`src/error.rs` is the typed `Error`; `config.rs` uses it. The engine gained `run_with` and
+`Interrupt`: a stop flag and a deadline checked between actions and compress batches, reported
+as `Report::interrupted`. A group out of lock budget lets go and is visited once more after the
+others; what is left then counts as busy, and scheduling it later is the daemon's (T34).
+`plan` is a dry run of the same pipeline, not a `Plan` value: each pass plans on what the one
+before it left. `main.rs` went from 810 to 587 lines of parsing, printing and exit codes; the
+CLI's one new behavior is the run lock (exit code 2, "another run of dunnage holds …").
+`anyhow` and `clap` are behind the default `cli` feature, which the `[[bin]]` requires.
+
+Verified on macOS: `just check` — fmt, clippy with `-D warnings`, `cargo check --lib
+--no-default-features`, 134 tests (the 128 before, unchanged, every `tests/cmd` snapshot
+included, plus six new: a whole run through `Session` with the freshness oracle, two sessions
+kept apart by the run lock, the CLI's exit code 2, a stop between groups, a group out of lock
+budget, and in `tests/engine.rs` a stop raised between two replacements that leaves one file new,
+the other old and no temp file) — and `just check-cross` for Linux and Windows.

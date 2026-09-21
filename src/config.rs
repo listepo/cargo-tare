@@ -7,8 +7,9 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
 use serde::Deserialize;
+
+use crate::error::{Error, Result};
 
 /// Under `$XDG_CONFIG_HOME`, or `$HOME/.config` when that is not set.
 const RELATIVE: &str = "dunnage/config.toml";
@@ -72,9 +73,12 @@ impl Config {
         let text = match fs::read_to_string(path) {
             Ok(text) => text,
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Self::default()),
-            Err(error) => return Err(error).context(format!("reading {}", path.display())),
+            Err(error) => return Err(Error::at(format_args!("reading {}", path.display()))(error)),
         };
-        toml::from_str(&text).with_context(|| format!("in {}", path.display()))
+        toml::from_str(&text).map_err(|source| Error::Config {
+            path: path.to_path_buf(),
+            source,
+        })
     }
 
     pub fn skips(&self, family: &Path) -> bool {

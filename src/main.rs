@@ -1,43 +1,20 @@
-use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
-use dunnage::advise::{self, Kind};
 use dunnage::cargo_home;
-use dunnage::compress::{self, Compress};
 use dunnage::config::{self, Config};
-use dunnage::dedupe::{self, Dedupe};
-use dunnage::doc::{self, Doc, Docs};
-use dunnage::engine::{self, Locks, Options, Pass};
-use dunnage::evict::{self, Evict, Limits};
-use dunnage::incremental::{self, Incremental};
-use dunnage::index::HashIndex;
-use dunnage::inventory::{self, Inventory, ProfileInfo, Target};
-use dunnage::orphans::{self, Orphan, Orphans};
-use dunnage::seed;
+use dunnage::engine;
+use dunnage::inventory::{Inventory, Target};
+use dunnage::session::{self, Control, Observer, Request, RunReport, Session, Settings};
 
-/// Relative to `$HOME`. The digit follows the index file format.
-const DEFAULT_INDEX: &str = ".cache/dunnage/hashes-v1.bin";
 const BYTES_PER_GIB: f64 = (1u64 << 30) as f64;
-/// Exit code when a profile dir was skipped because a build holds its lock.
+/// Exit code when a profile dir was skipped because a build holds its lock, or another run of
+/// the tool holds the run lock.
 const BUSY_EXIT: u8 = 2;
-/// Every pass that deletes rebuildable data; `--lossy` takes these names.
-/// What the report calls the one group `--across-families` makes, in place of a family dir.
-const ACROSS_FAMILIES: &str = "<across families>";
-const LOSSY_PASSES: [&str; 4] = [orphans::NAME, evict::NAME, incremental::NAME, doc::NAME];
-/// Every pass, in pipeline order; `--pass` takes these names.
-const PASSES: [&str; 6] = [
-    orphans::NAME,
-    evict::NAME,
-    incremental::NAME,
-    doc::NAME,
-    compress::NAME,
-    dedupe::NAME,
-];
 const SECS_PER_DAY: u64 = 24 * 60 * 60;
 
 /// Shrink Cargo target directories without slowing builds
@@ -187,28 +164,64 @@ fn main() -> ExitCode {
         Ok(Done::LeftBusy) => ExitCode::from(BUSY_EXIT),
         Err(error) => {
             eprintln!("error: {error:#}");
-            ExitCode::FAILURE
+            // Another run is working on the same targets: the same "try again later".
+            let busy = matches!(
+                error.downcast_ref::<dunnage::Error>(),
+                Some(dunnage::Error::RunLockHeld(_))
+            );
+            if busy {
+                ExitCode::from(BUSY_EXIT)
+            } else {
+                ExitCode::FAILURE
+            }
         }
     }
 }
 
-/// What `run` finished with; the difference is visible in the exit code.
+/// What a command finished with; the difference is visible in the exit code.
 enum Done {
     Everything,
     LeftBusy,
 }
 
-/// Canonical, so that families, scanned paths and locked dirs all compare equal.
-fn read_inventory(mut roots: Vec<PathBuf>) -> Result<Inventory> {
-    if roots.is_empty() {
-        roots.push(PathBuf::from("."));
+impl Done {
+    fn busy_if(left_busy: bool) -> Self {
+        if left_busy {
+            Self::LeftBusy
+        } else {
+            Self::Everything
+        }
     }
-    for root in &mut roots {
-        *root = root
-            .canonicalize()
-            .with_context(|| format!("{}", root.display()))?;
-    }
-    Ok(inventory::inventory(&roots)?)
+}
+
+/// `--cargo-home` without a value means "the one cargo would use".
+fn home_flag(flag: Option<PathBuf>) -> Option<PathBuf> {
+    flag.and_then(|flag| cargo_home::path((!flag.as_os_str().is_empty()).then_some(flag)))
+}
+
+/// The roots named on the command line, else `roots` from the config file, else `.`.
+fn roots_or_config(roots: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
+    let roots = if roots.is_empty() {
+        match config::default_path() {
+            Some(path) => Config::load(&path)?.roots,
+            None => Vec::new(),
+        }
+    } else {
+        roots
+    };
+    Ok(if roots.is_empty() {
+        vec![PathBuf::from(".")]
+    } else {
+        roots
+    })
+}
+
+fn open(index: Option<PathBuf>) -> Result<Session> {
+    let index = match index {
+        Some(path) => path,
+        None => session::default_index().context("HOME is not set; pass --index")?,
+    };
+    Ok(Session::open(Settings { index }))
 }
 
 fn gib(bytes: u64) -> String {
@@ -232,25 +245,22 @@ fn missing_caps(caps: &dunnage::sys::Caps) -> Option<&'static str> {
     }
 }
 
-fn status(json: bool, home: Option<PathBuf>, mut roots: Vec<PathBuf>) -> Result<()> {
-    if roots.is_empty() {
-        // The same `roots` key `run` uses; `.` stays the fallback when there is none.
-        roots = match config::default_path() {
-            Some(path) => Config::load(&path)?.roots,
-            None => Vec::new(),
-        };
-    }
-    let mut inventory = read_inventory(roots)?;
-    if let Some(home) =
-        home.and_then(|flag| cargo_home::path((!flag.as_os_str().is_empty()).then_some(flag)))
-    {
-        inventory.cargo_home = Some(cargo_home::inspect(&home)?);
-    }
+fn status(json: bool, home: Option<PathBuf>, roots: Vec<PathBuf>) -> Result<()> {
+    // The same `roots` key `run` uses; `.` stays the fallback when there is none.
+    let roots = roots_or_config(roots)?;
+    // Read-only and stateless: no index, so a missing `$HOME` is no reason to stop.
+    let session = Session::open(Settings::default());
+    let inventory = session.inventory(&roots, home_flag(home).as_deref())?;
     if json {
         println!("{}", serde_json::to_string_pretty(&inventory)?);
         return Ok(());
     }
-    let now = now_unix();
+    print_inventory(&inventory);
+    Ok(())
+}
+
+fn print_inventory(inventory: &Inventory) {
+    let now = session::now_unix();
     let mut family = None;
     for target in &inventory.targets {
         if family != Some(&target.family) {
@@ -305,53 +315,24 @@ fn status(json: bool, home: Option<PathBuf>, mut roots: Vec<PathBuf>) -> Result<
         gib(sum(|t| t.compressible_bytes)),
         gib(sum(|t| t.dedupe_candidate_bytes))
     );
-    Ok(())
 }
 
-/// `dunnage advise`: which files to read and how to print what they say. The checks live in
-/// `advise.rs`; this reads nothing but text and writes nothing at all.
-fn advise(json: bool, mut roots: Vec<PathBuf>) -> Result<()> {
-    if roots.is_empty() {
-        roots = match config::default_path() {
-            Some(path) => Config::load(&path)?.roots,
-            None => Vec::new(),
-        };
+/// `dunnage advise`: how to print what the session found.
+fn advise(json: bool, roots: Vec<PathBuf>) -> Result<()> {
+    let roots = roots_or_config(roots)?;
+    let session = Session::open(Settings::default());
+    let advice = session.advise(&roots, cargo_home::path(None).as_deref())?;
+    for warning in &advice.warnings {
+        eprintln!("warning: {warning}");
     }
-    let inventory = read_inventory(roots)?;
-    let mut findings = Vec::new();
-    let mut read = Vec::new();
-    for target in &inventory.targets {
-        let Some(project) = target.root.parent() else {
-            continue;
-        };
-        let files = [
-            (project.join("Cargo.toml"), Kind::Manifest),
-            (project.join(".cargo/config.toml"), Kind::Config),
-        ];
-        for (file, kind) in files {
-            if read.contains(&file) {
-                continue;
-            }
-            findings.extend(review_file(&file, kind, project));
-            read.push(file);
-        }
-    }
-    // The cargo home is advised on even when it has no config file at all: the keys it is
-    // missing are the point.
-    let home = std::env::var_os("CARGO_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")));
-    if let Some(home) = home {
-        findings.extend(review_file(&home.join("config.toml"), Kind::Home, &home));
-    }
-    let notes = advise::notes(&inventory.targets);
+    let (findings, notes) = (&advice.findings, &advice.notes);
     if json {
         let report = serde_json::json!({ "findings": findings, "notes": notes });
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }
     let mut file = None;
-    for finding in &findings {
+    for finding in findings {
         if file != Some(&finding.file) {
             file = Some(&finding.file);
             println!("{}", finding.file.display());
@@ -360,7 +341,7 @@ fn advise(json: bool, mut roots: Vec<PathBuf>) -> Result<()> {
     }
     if !notes.is_empty() {
         println!("from the inventory");
-        for note in &notes {
+        for note in notes {
             println!("  {}: {}", note.about, note.note);
         }
     }
@@ -370,48 +351,7 @@ fn advise(json: bool, mut roots: Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-/// One file's findings. A file that is not there is not a finding of its own — except for the
-/// cargo home's config, whose absent keys `review` reports from an empty document.
-fn review_file(file: &Path, kind: Kind, dir: &Path) -> Vec<advise::Finding> {
-    let text = match std::fs::read_to_string(file) {
-        Ok(text) => text,
-        Err(_) if kind == Kind::Home => String::new(),
-        Err(_) => return Vec::new(),
-    };
-    let doc: toml::Table = match text.parse() {
-        Ok(doc) => doc,
-        Err(error) => {
-            eprintln!("warning: {}: {error}", file.display());
-            return Vec::new();
-        }
-    };
-    // Only asked when the answer matters, since it costs a process.
-    let nightly = doc.get("unstable").is_some() && nightly_toolchain(dir);
-    advise::review(file, kind, &doc, nightly)
-}
-
-/// Whether the toolchain cargo would use in `dir` is a nightly one, which is the only one that
-/// reads `[unstable]`. A rustc that cannot be run at all is treated as stable: the advice is
-/// then about a key that does nothing, which is still the safer thing to say.
-fn nightly_toolchain(dir: &Path) -> bool {
-    std::process::Command::new("rustc")
-        .arg("--version")
-        .current_dir(dir)
-        .output()
-        .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("nightly"))
-}
-
-fn index_path(flag: Option<PathBuf>) -> Result<PathBuf> {
-    match flag {
-        Some(path) => Ok(path),
-        None => {
-            let home = std::env::var_os("HOME").context("HOME is not set; pass --index")?;
-            Ok(PathBuf::from(home).join(DEFAULT_INDEX))
-        }
-    }
-}
-
-/// `dunnage seed`: the whole command, since the copy itself lives in `seed.rs`.
+/// `dunnage seed`: the session does the copy; this prints it.
 fn seed_into(
     from: Option<PathBuf>,
     dry_run: bool,
@@ -419,30 +359,13 @@ fn seed_into(
     dir: Option<PathBuf>,
 ) -> Result<Done> {
     let checkout = dir.unwrap_or_else(|| PathBuf::from("."));
-    let checkout = checkout
-        .canonicalize()
-        .with_context(|| format!("{}", checkout.display()))?;
-    let source = match from {
-        Some(path) => {
-            let path = path
-                .canonicalize()
-                .with_context(|| format!("{}", path.display()))?;
-            // A checkout or its target dir; both are what somebody means by "from there".
-            let target = path.join(seed::TARGET);
-            if target.is_dir() { target } else { path }
-        }
-        None => seed::choose(&checkout).context(
-            "no other checkout of this repository has a target dir; name one with --from",
-        )?,
-    };
-    let index_path = index_path(index)?;
-    let mut hashes = HashIndex::load(&index_path);
-    let seeded = seed::seed(&checkout, &source, &mut hashes, dry_run)
-        .with_context(|| format!("seeding {} from {}", checkout.display(), source.display()))?;
+    let session = open(index)?;
+    let done = session.seed(&checkout, from.as_deref(), dry_run)?;
+    let seeded = &done.seeded;
     let verb = if dry_run { "would copy" } else { "copied" };
     println!(
         "{} from {}: {verb} {} files and {} symlinks, {} that the clones share with it",
-        checkout.join(seed::TARGET).display(),
+        done.target.display(),
         seeded.source.display(),
         seeded.files,
         seeded.symlinks,
@@ -451,22 +374,39 @@ fn seed_into(
     for dir in &seeded.busy {
         println!("  busy, not copied: {}", dir.display());
     }
-    if !dry_run {
-        hashes
-            .save(&index_path)
-            .with_context(|| format!("saving {}", index_path.display()))?;
-    }
-    Ok(if seeded.busy.is_empty() {
-        Done::Everything
-    } else {
-        Done::LeftBusy
-    })
+    Ok(Done::busy_if(!seeded.busy.is_empty()))
 }
 
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |since_epoch| since_epoch.as_secs())
+/// Flags over the config file: a flag always wins.
+fn request(args: RunArgs, config: &Config) -> Request {
+    let mut request = Request::from_config(config);
+    if !args.lossy.is_empty() {
+        request.lossy = args.lossy;
+    }
+    request.passes = args.pass;
+    if let Some(days) = args.evict_idle_days {
+        request.evict.idle_days = Some(days);
+    }
+    if let Some(gib) = args.evict_max_total_gib {
+        request.evict.max_total_bytes = Some(session::gib_to_bytes(gib));
+    }
+    request.evict_whole_target |= args.evict_whole_target;
+    if let Some(days) = args.incremental_idle_days {
+        request.incremental_idle_days = Some(days);
+    }
+    if let Some(secs) = args.min_age {
+        request.min_age = Some(Duration::from_secs(secs));
+    }
+    if let Some(bytes) = args.min_size {
+        request.min_size = Some(bytes);
+    }
+    request.cargo_home = home_flag(args.cargo_home);
+    request.across_families |= args.across_families;
+    request.link_artifacts = args.link_artifacts;
+    if !args.roots.is_empty() {
+        request.roots = args.roots;
+    }
+    request
 }
 
 fn run(args: RunArgs) -> Result<Done> {
@@ -481,238 +421,60 @@ fn run(args: RunArgs) -> Result<Done> {
             None => Config::default(),
         },
     };
-    let opts = Options {
-        dry_run: args.dry_run,
-        lossy: if args.lossy.is_empty() {
-            config.lossy.clone()
-        } else {
-            args.lossy
-        },
+    let (dry_run, json, index) = (args.dry_run, args.json, args.index.clone());
+    let request = request(args, &config);
+    // Before anything else can fail, so a mistyped flag is named even without a `$HOME`.
+    request.check()?;
+    let session = open(index)?;
+    let table = Table {
+        link_warning: Cell::new(request.link_artifacts),
+        dry_run,
     };
-    for name in &opts.lossy {
-        ensure!(
-            LOSSY_PASSES.contains(&name.as_str()),
-            "unknown lossy pass `{name}`"
-        );
-    }
-    for name in &args.pass {
-        ensure!(PASSES.contains(&name.as_str()), "unknown pass `{name}`");
-    }
-    let limits = Limits {
-        idle_days: args.evict_idle_days.or(config.evict.idle_days),
-        max_total_bytes: args
-            .evict_max_total_gib
-            .or(config.evict.max_total_gib)
-            .map(|gib| gib.saturating_mul(1 << 30)),
+    let quiet = session::Quiet;
+    let control = Control {
+        observer: if json { &quiet } else { &table },
+        ..Control::default()
     };
-    let evicting = opts.lossy.iter().any(|name| name == evict::NAME);
-    ensure!(
-        evicting != (limits == Limits::default()),
-        "`--lossy evict` and a limit (--evict-idle-days, --evict-max-total-gib) need each other"
-    );
-    let incremental_idle_days = args.incremental_idle_days.or(config.incremental.idle_days);
-    let dropping = opts.lossy.iter().any(|name| name == incremental::NAME);
-    ensure!(
-        dropping == incremental_idle_days.is_some(),
-        "`--lossy incremental` and `--incremental-idle-days` need each other"
-    );
-    let index_path = index_path(args.index)?;
-    let index = RefCell::new(HashIndex::load(&index_path));
-    let (mut compress, mut dedupe) = (Compress::new(&index), Dedupe::new(&index));
-    // Artifacts are only linked when the user asks; the cargo home's unpacked sources are
-    // always safe to link, because cargo replaces a source dir instead of rewriting its files.
-    let mut home_dedupe = Dedupe::new(&index);
-    dedupe.link_fallback = args.link_artifacts;
-    home_dedupe.link_fallback = true;
-    if let Some(secs) = args.min_age.or(config.min_age) {
-        let min_age = Duration::from_secs(secs);
-        (compress.min_age, dedupe.min_age) = (min_age, min_age);
-        home_dedupe.min_age = min_age;
-    }
-    if let Some(bytes) = args.min_size.or(config.min_size) {
-        (compress.min_size, dedupe.min_size) = (bytes, bytes);
-        home_dedupe.min_size = bytes;
-    }
-
-    // One engine run per family: its locks block builds only in the targets being compared.
-    // ponytail: equal files in unrelated projects (the same registry crates) are not shared;
-    // run families together if the benchmarks say it is worth the wider lock.
-    let roots = if args.roots.is_empty() {
-        config.roots.clone()
+    let report = if dry_run {
+        session.plan(&request, &control)?
     } else {
-        args.roots
+        session.apply(&request, &control)?
     };
-    // `--cargo-home` is a run of its own: it needs no target and no root.
-    let only_home = roots.is_empty() && args.cargo_home.is_some();
-    ensure!(
-        !roots.is_empty() || only_home,
-        "no roots: name them on the command line or set `roots` in the config file"
-    );
-    let inventory = if only_home {
-        Inventory::default()
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&JsonReport::new(&report))?
+        );
     } else {
-        read_inventory(roots)?
-    };
-    ensure!(
-        !inventory.targets.is_empty() || only_home,
-        "no cargo target dirs found"
-    );
-    // The size cap is global, so eviction is decided over everything under the roots at once.
-    let profiles: Vec<ProfileInfo> = inventory
-        .targets
-        .iter()
-        .flat_map(|target| target.profiles.iter().cloned())
-        .collect();
-    let chosen = evict::select(&profiles, now_unix(), limits);
-    let mut evict = Evict::new(chosen.clone());
-    if args.evict_whole_target || config.evict.whole_target {
-        evict = evict.whole(evict::whole_targets(&inventory.targets, &chosen));
-    }
-    // Cargo keeps `incremental/` for workspace members only, so this costs one plain rebuild.
-    let idle_days = incremental_idle_days.unwrap_or(u64::MAX);
-    let incremental = Incremental::new(incremental::select(&profiles, now_unix(), idle_days));
-    // Whole targets of checkouts git no longer registers; the sources next to them stay.
-    let orphans = Orphans::new(
-        inventory
-            .targets
-            .iter()
-            .filter(|target| target.orphaned)
-            .map(|target| Orphan {
-                target: target.root.clone(),
-                allocated_bytes: target.allocated_bytes,
-            })
-            .collect(),
-    );
-    // `cargo doc` writes this dir again from scratch and no build reads it.
-    let docs = Doc::new(
-        inventory
-            .targets
-            .iter()
-            .filter(|target| target.doc_bytes > 0)
-            .map(|target| Docs {
-                target: target.root.clone(),
-                allocated_bytes: target.doc_bytes,
-            })
-            .collect(),
-    );
-    // Pipeline order (`DESIGN.md`): orphans, evict, incremental, doc, compress, dedupe.
-    let all: [&dyn Pass; 6] = [&orphans, &evict, &incremental, &docs, &compress, &dedupe];
-    let passes: Vec<&dyn Pass> = all
-        .into_iter()
-        .filter(|pass| args.pass.is_empty() || args.pass.iter().any(|name| name == pass.name()))
-        .collect();
-    // One group per family keeps a run's locks inside the repository it is working on. Across
-    // families every target is compared with every other — unrelated projects do share
-    // artifacts — and the price is that the locks of all of them are held for the whole run.
-    let across = args.across_families || config.across_families;
-    let mut groups: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
-    for target in inventory.targets {
-        let family = target.family.unwrap_or_else(|| target.root.clone());
-        if config.skips(&family) {
-            continue;
-        }
-        // Not a path: the group is every family at once, and the report says so.
-        let key = if across {
-            PathBuf::from(ACROSS_FAMILIES)
-        } else {
-            family
-        };
-        let dirs = target.profiles.into_iter().map(|profile| profile.dir);
-        groups.entry(key).or_default().extend(dirs);
-    }
-
-    if args.link_artifacts && !args.json {
-        eprintln!(
-            "--link-artifacts: equal artifacts may become one inode where the filesystem \
-             cannot share blocks. A build that rewrites one of them rewrites the others."
-        );
-    }
-    let mut left_busy = false;
-    let mut reports = Vec::new();
-    for (group, profile_dirs) in &groups {
-        if !args.json {
-            println!("{}", group.display());
-        }
-        let report = engine::run(profile_dirs, &passes, &opts, Locks::PerDir)?;
-        left_busy |= !report.busy.is_empty();
-        if args.json {
-            reports.push((group.as_path(), report));
-        } else {
-            print_report(&report, opts.dry_run);
-        }
-    }
-    // One more group, guarded by cargo's own home lock instead of per-profile locks. Only
-    // `compress` runs here: these are unpacked sources, not build output.
-    let home = args
-        .cargo_home
-        .and_then(|flag| cargo_home::path((!flag.as_os_str().is_empty()).then_some(flag)));
-    if let Some(home) = &home {
-        let dirs = cargo_home::dirs(home);
-        ensure!(
-            !dirs.is_empty(),
-            "no {} or {} in {}",
-            cargo_home::DIRS[0],
-            cargo_home::DIRS[1],
-            home.display()
-        );
-        let lock = home.join(cargo_home::LOCK_FILE);
-        ensure!(
-            lock.is_file(),
-            "no {} in {}: cargo has never used it as its home",
-            cargo_home::LOCK_FILE,
-            home.display()
-        );
-        if !args.json {
-            println!("{}", home.display());
-        }
-        // Compression, and sharing with the home's own policy: on a filesystem without
-        // copy-on-write these sources are the one place a hardlink is safe.
-        let home_passes: Vec<&dyn Pass> = passes
-            .iter()
-            .copied()
-            .filter(|pass| pass.name() == compress::NAME)
-            .chain(
-                passes
-                    .iter()
-                    .any(|pass| pass.name() == dedupe::NAME)
-                    .then_some(&home_dedupe as &dyn Pass),
-            )
-            .collect();
-        let report = engine::run(&dirs, &home_passes, &opts, Locks::Shared(&lock))?;
-        left_busy |= !report.busy.is_empty();
-        if args.json {
-            reports.push((home.as_path(), report));
-        } else {
-            print_report(&report, opts.dry_run);
-        }
-    }
-    if args.json {
-        let json = JsonReport {
-            dry_run: opts.dry_run,
-            groups: reports
-                .iter()
-                .map(|(group, report)| JsonGroup::new(group, report))
-                .collect(),
-            compress_notes: compress.notes(),
-            files_hashed: dedupe.hashed(),
-        };
-        println!("{}", serde_json::to_string_pretty(&json)?);
-    } else {
-        for note in compress.notes() {
+        for note in &report.compress_notes {
             println!("compress backend: {note}");
         }
-        println!("files hashed: {}", dedupe.hashed());
+        println!("files hashed: {}", report.files_hashed);
     }
-    // The index only caches hashes of files as they are, so it is worth keeping on a dry run too.
-    index
-        .borrow()
-        .save(&index_path)
-        .with_context(|| format!("saving {}", index_path.display()))?;
-    Ok(if left_busy {
-        Done::LeftBusy
-    } else {
-        Done::Everything
-    })
+    Ok(Done::busy_if(report.left_busy))
+}
+
+/// The table a run prints as it goes.
+struct Table {
+    /// Still to be said, once, before the first group.
+    link_warning: Cell<bool>,
+    dry_run: bool,
+}
+
+impl Observer for Table {
+    fn group(&self, group: &Path) {
+        if self.link_warning.replace(false) {
+            eprintln!(
+                "--link-artifacts: equal artifacts may become one inode where the filesystem \
+                 cannot share blocks. A build that rewrites one of them rewrites the others."
+            );
+        }
+        println!("{}", group.display());
+    }
+
+    fn report(&self, _group: &Path, report: &engine::Report) {
+        print_report(report, self.dry_run);
+    }
 }
 
 fn print_report(report: &engine::Report, dry_run: bool) {
@@ -747,8 +509,23 @@ fn print_report(report: &engine::Report, dry_run: bool) {
 struct JsonReport<'a> {
     dry_run: bool,
     groups: Vec<JsonGroup<'a>>,
-    compress_notes: Vec<String>,
+    compress_notes: &'a [String],
     files_hashed: usize,
+}
+
+impl<'a> JsonReport<'a> {
+    fn new(report: &'a RunReport) -> Self {
+        Self {
+            dry_run: report.dry_run,
+            groups: report
+                .groups
+                .iter()
+                .map(|(group, report)| JsonGroup::new(group, report))
+                .collect(),
+            compress_notes: &report.compress_notes,
+            files_hashed: report.files_hashed,
+        }
+    }
 }
 
 #[derive(serde::Serialize)]

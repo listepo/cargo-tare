@@ -1,5 +1,4 @@
 - T24. A place where the Windows tests run
-- T36. Library boundary: one `Session` under every front end
 - T21. Windows: NTFS compression and ReFS block cloning
 - T25. `run` until nothing is left to do
 - T26. `dunnage worktree add`
