@@ -215,6 +215,9 @@ struct RunArgs {
     /// Content-hash cache [default: ~/.cache/dunnage/hashes-v1.bin]
     #[arg(long, value_name = "FILE")]
     index: Option<PathBuf>,
+    /// Walk the roots for build dirs even if the last walk is recent enough to reuse
+    #[arg(long)]
+    rediscover: bool,
     /// Configuration file [default: $XDG_CONFIG_HOME/dunnage/config.toml]
     #[arg(long, value_name = "FILE")]
     config: Option<PathBuf>,
@@ -624,6 +627,7 @@ fn request(args: RunArgs, config: &Config) -> Request {
     request.across_families |= args.across_families;
     request.link_artifacts = args.link_artifacts;
     request.until_settled = true;
+    request.rediscover = args.rediscover;
     if !args.roots.is_empty() {
         request.roots = args.roots;
     }
@@ -661,6 +665,9 @@ fn run(args: RunArgs) -> Result<Done> {
             println!("compress backend: {note}");
         }
         println!("files hashed: {}", report.files_hashed);
+        if !report.walked && !report.groups.is_empty() {
+            println!("build dirs from the last walk of the roots; --rediscover walks them again");
+        }
     }
     Ok(Done::busy_if(report.left_busy))
 }
@@ -725,6 +732,8 @@ struct JsonReport<'a> {
     groups: Vec<JsonGroup<'a>>,
     compress_notes: &'a [String],
     files_hashed: usize,
+    /// The roots were walked for build dirs, rather than the last walk's list used.
+    walked: bool,
 }
 
 impl<'a> JsonReport<'a> {
@@ -738,6 +747,7 @@ impl<'a> JsonReport<'a> {
                 .collect(),
             compress_notes: &report.compress_notes,
             files_hashed: report.files_hashed,
+            walked: report.walked,
         }
     }
 }

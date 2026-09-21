@@ -32,6 +32,7 @@ use crate::error::{Error, Result};
 use crate::evict::{self, Evict, Limits};
 use crate::index::HashIndex;
 use crate::inventory::{self, Inventory, ProfileInfo, Target};
+use crate::known;
 use crate::orphans::{self, Orphan, Orphans};
 use crate::seed::{self, Seeded};
 
@@ -70,6 +71,9 @@ pub struct Settings {
     pub index: PathBuf,
     /// Entries of the index no run has looked up for this long are dropped on save.
     pub index_idle: Duration,
+    /// How long `plan` and `apply` use the build dirs of the last walk ([`known`]); zero walks
+    /// every time.
+    pub rediscover_every: Duration,
 }
 
 impl Default for Settings {
@@ -77,6 +81,7 @@ impl Default for Settings {
         Self {
             index: PathBuf::new(),
             index_idle: DEFAULT_INDEX_IDLE,
+            rediscover_every: known::DEFAULT_EVERY,
         }
     }
 }
@@ -90,11 +95,20 @@ impl Settings {
             index_idle: idle.map_or(DEFAULT_INDEX_IDLE, |days| {
                 Duration::from_secs(days.saturating_mul(SECS_PER_DAY))
             }),
+            rediscover_every: config
+                .discovery
+                .every_secs
+                .map_or(known::DEFAULT_EVERY, Duration::from_secs),
         }
     }
 
     pub fn run_lock(&self) -> PathBuf {
         self.index.with_file_name(RUN_LOCK)
+    }
+
+    /// The build dirs of the last walk, next to the index; none without an index.
+    pub fn known_dirs(&self) -> Option<PathBuf> {
+        (!self.index.as_os_str().is_empty()).then(|| self.index.with_file_name(known::FILE))
     }
 }
 
@@ -134,6 +148,8 @@ pub struct Request {
     /// Repeat the passes on a group while a round still applies anything, under the same
     /// locks, so one visit leaves nothing for the next.
     pub until_settled: bool,
+    /// Walk the roots even when the build dirs of the last walk still hold.
+    pub rediscover: bool,
 }
 
 impl Request {
@@ -310,6 +326,8 @@ pub struct RunReport {
     pub left_busy: bool,
     /// The stop flag ended the run.
     pub stopped: bool,
+    /// The build dirs came from a walk of the roots, not from the last walk's list.
+    pub walked: bool,
 }
 
 /// What `advise` found.
@@ -551,10 +569,24 @@ impl Session {
         ensure(!request.roots.is_empty() || only_home, || {
             "no roots: name them on the command line or set `roots` in the config file".into()
         })?;
+        let mut report_walked = false;
         let mut inventory = if only_home {
             Inventory::default()
         } else {
-            read_inventory(&request.roots)?
+            let roots = request
+                .roots
+                .iter()
+                .map(|root| canonical(root))
+                .collect::<Result<Vec<_>>>()?;
+            let (found, walked) = known::discover(
+                self.settings.known_dirs().as_deref(),
+                &roots,
+                self.settings.rediscover_every,
+                request.rediscover,
+                now_unix(),
+            );
+            report_walked = walked;
+            inventory::inventory_of(found)?
         };
         ensure(!inventory.targets.is_empty() || only_home, || {
             "no cargo target dirs found".into()
@@ -670,6 +702,7 @@ impl Session {
 
         let mut report = RunReport {
             dry_run,
+            walked: report_walked,
             ..RunReport::default()
         };
         let mut again = Vec::new();

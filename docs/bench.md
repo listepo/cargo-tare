@@ -232,6 +232,21 @@ release build.
 Oracle: `cmake --build build -j 8` afterwards prints no `Building` or `Linking` line, and all 23
 tests pass under `ctest`.
 
+## Discovery in a monorepo
+
+A synthetic monorepo of 320,030 files: 60 × 50 source dirs of 100 empty `.rs` files each, and 10
+cargo targets of 2,000 artifacts at `src/m{0..9}/p0/target`, already settled by a first run.
+Release build, warm page cache, `hyperfine -N --warmup 1`.
+
+| re-run of a settled tree | mean |
+| --- | --- |
+| `run mono`, the roots walked (before, and `--rediscover` now) | 591 ± 34 ms |
+| `run` naming the 10 targets | 369 ± 39 ms |
+| `run mono`, build dirs from the last walk | **311 ± 8 ms** |
+
+The walk was about 40% of a run that had nothing left to do; the list takes it out, and a run
+over the whole tree costs what naming each target by hand did.
+
 ## sccache, for comparison
 
 | | clean build | target | cache |

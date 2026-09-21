@@ -767,6 +767,25 @@ The oracle is `cmake --build` with the Makefiles generator: after compress and d
 no `Building` and no `Linking` line, and the binaries still run; a new mtime on a source makes it
 build again. Ninja and Meson build dirs are T32.1.
 
+## Known build dirs (`src/known.rs`)
+
+In a monorepo the walk for build dirs costs the source tree, not the build dirs (`docs/bench.md`,
+"Discovery in a monorepo"). `Session` keeps the last walk in `build-dirs-v1.json` next to the
+index: the canonical roots, when they were walked, each root's own mtime, and every build dir
+with its adapter's name. The next run uses the list when the roots are the same, the list is
+younger than `[discovery] every-secs` (1 h), and no root's mtime moved; otherwise it walks and
+writes the list back through a temp file and a rename.
+
+- **Every entry is claimed again.** A listed dir goes through its adapter's `claim`, so a removed
+  build dir drops out without a walk, and a dir that stopped being one is not worked on.
+- **A new build dir waits.** One created below a root's top level does not move the root's mtime:
+  it is seen at the next walk. `run` says when it used the list, and `--rediscover` walks now.
+  The daemon sets `rediscover` for the run after each of its own walks, so a unit it found is
+  never marked visited by a run that did not see it.
+- **Best effort.** A list that cannot be read or written costs a walk, never a failure. A
+  session without an index path walks every time.
+- **Not a file-system watcher.** Watching the tree is the `notify` question in `ideas.md`.
+
 ## Daemon (`src/daemon/`)
 
 In the binary, not the library: only a process has triggers. Every change it makes is one
@@ -807,6 +826,7 @@ dunnage run [--dry-run] [--lossy <PASS>]... [--index <FILE>] [<ROOT>]...
                [--incremental-idle-days <N>]        # with --lossy incremental
                [--orphans-project-idle-days <N>]    # with --lossy orphans: projects gone
                [--pass <PASS>]... [--min-age <SECS>] [--min-size <BYTES>]  # benchmarks
+               [--rediscover]                       # walk the roots even if the list holds
 dunnage seed [--from <DIR>] [--dry-run] [--index <FILE>] [<DIR>]  # clone a sibling's target
 dunnage worktree add [--dry-run] [--index <FILE>] <GIT ARGS>... # git worktree add, then seed
 dunnage advise [--json] [ROOT]...  # what makes these targets bigger than they need to be
@@ -817,7 +837,7 @@ dunnage daemon install [--config <FILE>] [--index <FILE>] [--print] | remove | s
 Config (`src/config.rs`): `$XDG_CONFIG_HOME/dunnage/config.toml`, else
 `~/.config/dunnage/config.toml` — `roots`, `lossy`, `min-age`, `min-size`,
 `[evict] idle-days / max-total-gib / whole-target`, `[incremental] idle-days`, `[index] idle-days`, `[orphans] project-idle-days`,
-`[daemon] interval-secs / rediscover-secs / lock-budget-secs`,
+`[discovery] every-secs`, `[daemon] interval-secs / rediscover-secs / lock-budget-secs`,
 `[family."<dir>"] skip / skip-paths / ecosystems`. Keys are
 kebab-case and unknown ones are an error: a typo that silently does nothing is worse than a stop.
 A flag always wins over the file, and a file named with `--config` must exist. Per family there

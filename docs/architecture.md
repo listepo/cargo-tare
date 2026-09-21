@@ -143,6 +143,11 @@ for each root (and each enabled adapter's well_known dirs):
 - If the walk itself is measured to hurt on a large monorepo, git can name the candidates: build
   dirs are ignored dirs, and `git ls-files --others --ignored --exclude-standard --directory`
   lists those without visiting tracked trees. Measure first; not part of the first step.
+- **Done in T40: measured, and the walk is skipped instead.** On a 320k-file synthetic monorepo
+  the walk was about 40% of a settled re-run. `src/known.rs` keeps the last walk next to the
+  index and reuses it while the roots, the cadence and the roots' own mtimes hold, claiming each
+  entry again; `--rediscover` walks now. The git listing stays unneeded until a walk that is
+  paid once an hour hurts.
 
 ## Monorepo behavior, pass by pass
 

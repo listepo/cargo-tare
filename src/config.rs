@@ -43,6 +43,8 @@ pub struct Config {
     pub orphans: OrphansConfig,
     #[serde(default)]
     pub daemon: Daemon,
+    #[serde(default)]
+    pub discovery: Discovery,
     /// Per-family overrides, keyed by the family's dir: the git common dir of the repository and
     /// its worktrees, or the target dir itself when there is no repository.
     #[serde(default)]
@@ -78,6 +80,14 @@ pub struct OrphansConfig {
 pub struct Index {
     /// Drop hash-index entries no run has looked up for this many days.
     pub idle_days: Option<u64>,
+}
+
+/// `[discovery]`: how long the build dirs a walk found are used instead of walking again.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct Discovery {
+    /// Walk the roots again when the last walk is this old; 0 walks on every run.
+    pub every_secs: Option<u64>,
 }
 
 /// `[daemon]`: how often `dunnage daemon run` looks, and how long it may keep a build waiting.

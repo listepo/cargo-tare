@@ -381,3 +381,56 @@ reported as work nor touched; `docs/usage.md` documents both.
   - the grouped `status` output with and without `--all`.
 - `src/config.rs`: the new keys parse.
 - `~/.cache/dunnage` is absent.
+
+### T40. Known build dirs: a persisted inventory
+
+Every run walks the roots to find build dirs, and in a monorepo the cost of that walk is the
+source tree, not the build dirs. The daemon holds the list in memory; the CLI starts from
+nothing each time. Persist what discovery found next to the hash index — build dir, adapter,
+owner, marker stamp — re-validate entries by their markers, and walk only on a slow cadence,
+on `--rediscover`, or when a root's own mtime says something moved. Measure first: the task
+starts with a walk benchmark on a large checkout and closes with "not needed" if discovery is
+already a small share of a settled re-run.
+
+#### Execution plan
+
+Measured first (`docs/bench.md`): a synthetic monorepo of 320,000 empty source files in 3,000
+dirs with 10 cargo targets of 2,000 artifacts each, warm cache. A settled re-run from the
+monorepo root takes 610 ms; naming the 10 targets as roots, 369 ms. The walk is ~40% of the
+re-run: not a small share, so the task goes on.
+
+1. `src/known.rs`: `build-dirs-v1.json` next to the hash index — the canonical roots, when they
+   were walked, each root's mtime, and every build dir with its adapter. It is used when the roots
+   are the same, the list is younger than `[discovery] every-secs` (default 3600; 0 always walks)
+   and no root's mtime moved. Each entry is re-validated by its adapter's `claim` (its marker), so
+   a removed build dir drops out without a walk. It is written by temp file and rename.
+2. `inventory::inventory` splits into the walk and `inventory_of(found)`. `plan` and `apply` take
+   the list through it; `status`, `advise` and `seed` keep walking. `Request::rediscover`
+   (`run --rediscover`) forces the walk. `RunReport::walked` says which happened, and the CLI
+   prints a line when the list was used.
+3. Tests: a new build dir is not seen until the walk (`--rediscover`, cadence, root mtime); a
+   removed one drops out; other roots walk. Then the benchmark again.
+
+#### Result
+
+- As planned. `src/known.rs` holds the list; `Settings::rediscover_every` comes from
+  `[discovery] every-secs`, and a session without an index path walks every run.
+- The daemon walks the roots on its own cadence for scheduling. After each of its walks it sets
+  `rediscover` for the next run, so a unit it found is never marked visited by a run that used
+  an older list and did not see it.
+- Re-run of the settled synthetic monorepo: 591 ± 34 ms with the walk, 311 ± 8 ms from the
+  list, against 369 ± 39 ms naming the 10 targets by hand.
+- Docs: usage (`--rediscover`, `[discovery]`), DESIGN "Known build dirs", architecture, bench
+  "Discovery in a monorepo".
+
+#### Verified
+
+- `just check` (199 tests) and `just check-cross` pass.
+- `tests/known.rs`:
+  - a new build dir below the root's top level waits for the walk, and `--rediscover` finds it;
+  - a removed one drops out without a walk;
+  - other roots, a moved root mtime and cadence 0 walk;
+  - the list holds for the cadence and no longer.
+- The benchmark ran with `HOME` and the index in a temp dir. `~/.cache/dunnage` is absent, and
+  no `_.build.lock` is left in `$TMPDIR`.
+

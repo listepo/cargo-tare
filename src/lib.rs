@@ -9,6 +9,7 @@ pub mod error;
 pub mod evict;
 pub mod index;
 pub mod inventory;
+pub mod known;
 pub mod model;
 pub mod orphans;
 pub mod seed;

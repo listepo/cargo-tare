@@ -15,7 +15,6 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | T30.1 | todo | P2 | 3 | 0% | |
 | T32.1 | todo | P2 | 2 | 0% | |
 | T38.1 | todo | P2 | 3 | 0% | |
-| T40 | todo | P3 | 3 | 0% | |
 | T35 | todo | P3 | 2 | 0% | |
 
 Blockers, take these first. **T24** blocks T21: nothing on Windows can be tested without it.
@@ -144,16 +143,6 @@ gone, with a fixture test for both.
 build, but it is parsing cargo's output, a heuristic; (b) a record dunnage writes itself when
 `seed`/`worktree add`/the daemon sees a build dir being used from a workspace — exact, but only
 for dirs it has seen; (c) configuration: `[owners]` mapping build dirs to workspaces.
-
-### T40. Known build dirs: a persisted inventory
-
-Every run walks the roots to find build dirs, and in a monorepo the cost of that walk is the
-source tree, not the build dirs. The daemon holds the list in memory; the CLI starts from
-nothing each time. Persist what discovery found next to the hash index — build dir, adapter,
-owner, marker stamp — re-validate entries by their markers, and walk only on a slow cadence,
-on `--rediscover`, or when a root's own mtime says something moved. Measure first: the task
-starts with a walk benchmark on a large checkout and closes with "not needed" if discovery is
-already a small share of a settled re-run.
 
 ### T35. Go: `GOCACHE` and `GOMODCACHE`
 

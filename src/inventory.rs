@@ -96,9 +96,14 @@ pub fn discover(roots: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 pub fn inventory(roots: &[PathBuf]) -> io::Result<Inventory> {
+    inventory_of(eco::discover(roots))
+}
+
+/// The inventory of build dirs already found, by a walk or from [`crate::known`].
+pub fn inventory_of(found: Vec<(PathBuf, &'static dyn Ecosystem)>) -> io::Result<Inventory> {
     let mut targets = Vec::new();
     let mut sizes = Vec::new();
-    for (root, eco) in eco::discover(roots) {
+    for (root, eco) in found {
         let (target, target_sizes) = inspect(&root, eco)?;
         targets.push(target);
         sizes.push(target_sizes);

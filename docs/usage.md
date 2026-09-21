@@ -133,6 +133,7 @@ config file.
 | `--store DIR` | also compress a content-addressed store (`GOCACHE`, `~/.cabal/store`, Zig's `o/`); repeatable, no lock, entries older than an hour only |
 | `--across-families` | compare targets of unrelated repositories too; holds every lock for the whole run |
 | `--link-artifacts` | **hazard**: on filesystems without clones, share build artifacts as hardlinks |
+| `--rediscover` | walk the roots for build dirs even if the last walk still holds |
 | `--index <FILE>` | content-hash cache; default `~/.cache/dunnage/hashes-v1.bin` |
 | `--config <FILE>` | another config file; it must exist |
 | `--json` | the report as JSON |
@@ -140,6 +141,12 @@ config file.
 `--link-artifacts` is off for a reason: rustc rewrites its outputs in place, so a build that
 rewrites one linked artifact rewrites it in every target sharing the inode. Use it only for
 targets nobody builds in parallel, or not at all.
+
+In a monorepo most of a run is the walk of the source tree for build dirs. A walk is kept in
+`build-dirs-v1.json` next to the index, and the next run with the same roots reuses it for an
+hour (`[discovery] every-secs`) unless a root's own mtime moved. A build dir that is gone drops
+out at once; a new one deeper in the tree waits for the next walk, and the run says so. Pass
+`--rediscover` to walk now.
 
 ### `dunnage seed [--from DIR] [--dry-run] [--index FILE] [DIR]`
 
@@ -280,6 +287,9 @@ ecosystems = ["cargo"]   # only these adapters' build dirs
 
 [orphans]
 project-idle-days = 7  # as --orphans-project-idle-days
+
+[discovery]
+every-secs = 3600  # how long a walk of the roots for build dirs holds; 0 walks every run
 
 [daemon]
 interval-secs = 600      # the longest sleep between two looks

@@ -265,6 +265,8 @@ pub fn run(config: Option<&Path>, index: Option<PathBuf>, once: bool) -> Result<
             state.units = discover(&request.roots, &state.units);
             state.discovered_unix = now;
             next_discovery = now.saturating_add(rediscover.as_secs());
+            // The run walks too, or a build dir found here would be marked visited unseen.
+            request.rediscover = true;
         }
         refresh(&mut state.units, min_age);
         let ready: Vec<PathBuf> = state
@@ -281,6 +283,7 @@ pub fn run(config: Option<&Path>, index: Option<PathBuf>, once: bool) -> Result<
             match session.apply(&request, &control) {
                 Ok(report) => {
                     mark_visited(&mut state.units, &ready, &report);
+                    request.rediscover = false;
                     state.last_run = Some(LastRun::new(now, &report));
                     state.last_error = None;
                 }
