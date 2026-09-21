@@ -15,10 +15,8 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | T30.1 | todo | P2 | 3 | 0% | |
 | T32.1 | todo | P2 | 2 | 0% | |
 | T38.1 | todo | P2 | 3 | 0% | |
-| T35 | todo | P3 | 2 | 0% | |
 
 Blockers, take these first. **T24** blocks T21: nothing on Windows can be tested without it.
-T35 is the lowest priority in the plan by the creator's word: take it only when nothing else is free.
 
 Decisions the plan is built on, all the creator's: the tool runs as a CLI **and** as a daemon
 with as much shared code as possible, and must stay embeddable as a library in a build system —
@@ -143,14 +141,3 @@ gone, with a fixture test for both.
 build, but it is parsing cargo's output, a heuristic; (b) a record dunnage writes itself when
 `seed`/`worktree add`/the daemon sees a build dir being used from a workspace — exact, but only
 for dirs it has seen; (c) configuration: `[owners]` mapping build dirs to workspaces.
-
-### T35. Go: `GOCACHE` and `GOMODCACHE`
-
-Lowest priority in the plan. Go has no per-project build dir: `GOCACHE` is one content-addressed
-store the `go` command trims on its own, so `dedupe`, `seed`, `orphans` and `evict` have nothing
-to do (`docs/ecosystems.md`). What is left is `compress`, through T33's mode: `GOCACHE` found by
-`go env GOCACHE`, and `GOMODCACHE` as the counterpart of `--cargo-home` — extracted sources,
-which went down 69% for cargo. `GOMODCACHE` dirs are read-only on purpose; lifting and restoring
-directory modes is the risk the spike has to price, and "leave `GOMODCACHE` alone" is an
-acceptable outcome. Oracle: `go build ./...` after the pass reports every package cached
-(`go build -x` runs no compile step) and `go mod verify` is green.

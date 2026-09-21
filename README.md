@@ -55,6 +55,7 @@ dunnage seed [--from <DIR>] [--dry-run] [--index <FILE>] [<DIR>]
 dunnage worktree add [--dry-run] [--index <FILE>] <GIT ARGS>...
 dunnage run --cargo-home ~/code     # and the registry sources in ~/.cargo
 dunnage run --store "$(go env GOCACHE)"  # a content-addressed store, compress only
+dunnage run --go                         # GOCACHE, and the unpacked modules in GOMODCACHE
 dunnage run --dry-run --lossy orphans ~/code
 dunnage run --dry-run --lossy evict --evict-idle-days 30 ~/code
 dunnage run --lossy evict --evict-max-total-gib 50 ~/code
@@ -164,6 +165,13 @@ refuses ccache and sccache dirs, which compress their own entries, and any dir i
 target or a cargo home. A `GOCACHE` after `go build std` went from 216 MiB to 64 MiB, and the
 build afterwards compiled nothing (`docs/bench.md`). Repeatable; `stores = [...]` in the config
 does the same on every run.
+
+`--go` asks `go env` for both of Go's caches: `GOCACHE` becomes a store, and `GOMODCACHE` — the
+unpacked module sources, Go's counterpart of `registry/src` — a group of its own. `go` keeps
+every module dir read-only so that nobody edits a dependency by accident. The tool makes a dir
+writable only while it swaps compressed copies into it, and puts its mode back straight after;
+no file's bytes, mode or mtime change, so `go mod verify` stays green. A module cache of 146
+MiB went down to 105 MiB (`docs/bench.md`).
 
 SwiftPM packages are found too: a `.build` dir holding `workspace-state.json`. `swift build`
 locks it with a file in the temp dir named after its path, and the tool takes the same lock, so a

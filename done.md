@@ -434,3 +434,61 @@ re-run: not a small share, so the task goes on.
 - The benchmark ran with `HOME` and the index in a temp dir. `~/.cache/dunnage` is absent, and
   no `_.build.lock` is left in `$TMPDIR`.
 
+### T35. Go: `GOCACHE` and `GOMODCACHE`
+
+Lowest priority in the plan. Go has no per-project build dir: `GOCACHE` is one content-addressed
+store the `go` command trims on its own, so `dedupe`, `seed`, `orphans` and `evict` have nothing
+to do (`docs/ecosystems.md`). What is left is `compress`, through T33's mode: `GOCACHE` found by
+`go env GOCACHE`, and `GOMODCACHE` as the counterpart of `--cargo-home` — extracted sources,
+which went down 69% for cargo. `GOMODCACHE` dirs are read-only on purpose; lifting and restoring
+directory modes is the risk the spike has to price, and "leave `GOMODCACHE` alone" is an
+acceptable outcome. Oracle: `go build ./...` after the pass reports every package cached
+(`go build -x` runs no compile step) and `go mod verify` is green.
+
+#### Execution plan
+
+Spike, on a copy of the machine's `GOMODCACHE` (146 MiB, 24 modules) in a temp dir: `--store`
+on it today skips every file with `PermissionDenied` and leaves nothing behind. With the dirs'
+owner write bit lifted and put back, compress takes it to 106 MiB (−28%); every file keeps its
+bytes, mode and mtime, only dir mtimes move (the rename). Every module's `h1:` dir hash still
+matches its `.ziphash`, and a module built against the copy builds, rebuilds with no compile
+step and passes its tests. So the task goes on:
+
+1. `Ecosystem::lifts_read_only_dirs` (default false). `engine::apply_compress` lifts the owner
+   write bit of a read-only dir holding a member for the length of one batch and puts the mode
+   back after it; a mode it cannot put back fails the run. Unix only.
+2. `src/eco/go.rs`: the `GoModCache` adapter, `Guard::Immutable`, compress only, lifting; its
+   units are the module cache minus `cache/` (zips and VCS clones). `Request::go_modcache`, a
+   group of its own like the cargo home, refused when there is no `cache/download` in it.
+3. `run --go`: `go env GOCACHE GOMODCACHE` in the front end; `GOCACHE` becomes a store,
+   `GOMODCACHE` the module cache group.
+4. Tests: a fake read-only module cache keeps modes, mtimes and bytes, and no dir stays
+   writable; where `go` is installed, a real module downloaded offline from a fake proxy dir
+   verifies and rebuilds with no compile. Bench and docs.
+
+#### Result
+
+- As planned. `run --go` runs `go env GOCACHE GOMODCACHE` in the binary; `GOCACHE=off` adds
+  no store. The module cache is a group after the stores, `compress` only, under
+  `Guard::Immutable`.
+- The lift is per batch, not per file: the backend compresses a whole batch of temp copies at
+  once, and the copies and the renames both need the dir writable. A mode that cannot be put
+  back fails the run and names the dir.
+- Found on the way, fixed in T40's commit: a run of only `--store` walked "no roots" and
+  printed that it used the list of the last walk.
+- Docs: README, usage, DESIGN "Go module cache", ecosystems, architecture, bench "A Go module
+  cache", toolchain (`zip` for the test).
+
+#### Verified
+
+- `just check` (203 tests) and `just check-cross` pass.
+- `tests/go.rs`:
+  - a fake read-only module cache keeps every file's bytes, mode and mtime and every dir's mode,
+    and gets no leftovers;
+  - an adapter that does not lift fails every file with `PermissionDenied` and changes nothing;
+  - `go::check` refuses a dir without `cache/download`;
+  - with `go` and `zip` installed, `run --go` on a module from an offline proxy dir compresses
+    it; afterwards `go mod verify` is green and a rebuild runs no `compile` step.
+- The bench and the spike ran on a copy of the real module cache in a temp dir. The real one was
+  only read. `~/.cache/dunnage` is absent, and no `_.build.lock` is left in `$TMPDIR`.
+

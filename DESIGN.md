@@ -703,6 +703,36 @@ Zig, not the whole cache.
 lossy pass; `check`'s refusals; the CLI with no root; and, where `go` is installed, a `GOCACHE`
 fixture whose data entries still hash to their names and whose rebuild compiles nothing.
 
+## Go module cache (`src/eco/go.rs`)
+
+`run --go` asks `go env GOCACHE GOMODCACHE` in the binary (the library runs no tools and reads
+no environment): `GOCACHE` goes to the stores, `GOMODCACHE` to `Request::go_modcache`, one more
+group after the stores.
+
+- **Units.** Every top-level dir but `cache/`: the unpacked `<path>@<version>` trees. `cache/`
+  holds the downloaded zips, already compressed, and VCS clones `go` updates under its own locks.
+  `go::check` refuses a dir without `cache/download`.
+- **Guard.** `Guard::Immutable`, as for a store: `go` unpacks into a temp dir and renames it into
+  place, and checks a module later by the hash of its files alone (`go mod verify`), which no
+  compression changes. Only `compress` runs, and files younger than an hour are left out.
+- **Read-only dirs.** `go` makes every module dir `0555`. The engine's replace needs a temp copy
+  next to the file and a `rename` over it, so on such a dir each file fails with
+  `PermissionDenied`, harmlessly — what `--store` on a module cache does. The adapter answers
+  `Ecosystem::lifts_read_only_dirs`, and `engine::apply_compress` then adds the owner write bit
+  to each read-only dir holding a member of the batch, and puts the recorded mode back once the
+  batch is swapped in. A mode that cannot be put back stops the run with the dir's path; a dir
+  that cannot be lifted is left as it is. A crash inside a batch leaves at most those dirs
+  writable, which `go` does not check. Only dir mtimes move, as with any `rename`. Unix only: a
+  read-only dir on Windows does not stop anyone from creating files in it.
+- **Spike.** On a copy of a real module cache (146 MiB, 24 modules), with no lifting every file
+  was skipped; with it, 105 MiB, every module's `h1:` dir hash still equal to its `.ziphash`,
+  and a module built against the copy rebuilt with no compile step.
+
+`tests/go.rs`: a fake read-only module cache keeps every mode, mtime and byte and gets no
+leftovers; an adapter that does not lift fails every file with `PermissionDenied` and changes
+nothing; `check`'s refusal; and, where `go` and `zip` are installed, `run --go` on a module
+served from a proxy dir, after which `go mod verify` is green and a build compiles nothing.
+
 ## SwiftPM (`src/eco/swiftpm.rs`)
 
 - **Claim.** A dir named `.build` holding `workspace-state.json`, which every SwiftPM writes when
@@ -821,6 +851,7 @@ dunnage status [--json] [--all] [--cargo-home [DIR]] [ROOT]...  # inventory, fam
 dunnage run [--dry-run] [--lossy <PASS>]... [--index <FILE>] [<ROOT>]...
                [--config <FILE>] [--json]          # file: see below; json: the report as data
                [--cargo-home [DIR]]                # compress the registry sources too
+               [--store <DIR>]... [--go]           # content-addressed stores; Go's caches
                [--evict-idle-days <N>] [--evict-max-total-gib <N>]   # with --lossy evict
                [--evict-whole-target]                                # with --lossy evict
                [--incremental-idle-days <N>]        # with --lossy incremental

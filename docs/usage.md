@@ -131,6 +131,7 @@ config file.
 | `--min-size <BYTES>` | leave smaller files alone; default 8192 for compress, 4096 for dedupe |
 | `--cargo-home [DIR]` | also compress the cargo home's unpacked sources, under cargo's `.package-cache` lock |
 | `--store DIR` | also compress a content-addressed store (`GOCACHE`, `~/.cabal/store`, Zig's `o/`); repeatable, no lock, entries older than an hour only |
+| `--go` | also compress Go's caches where `go env` puts them: `GOCACHE` as a store, and the unpacked modules of `GOMODCACHE`, each read-only dir made writable only while its files are swapped |
 | `--across-families` | compare targets of unrelated repositories too; holds every lock for the whole run |
 | `--link-artifacts` | **hazard**: on filesystems without clones, share build artifacts as hardlinks |
 | `--rediscover` | walk the roots for build dirs even if the last walk still holds |

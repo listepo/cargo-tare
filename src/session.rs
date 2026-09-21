@@ -25,6 +25,7 @@ use crate::eco::cargo::advise::{self, Finding, Kind, Note};
 use crate::eco::cargo::doc::{self, Doc, Docs};
 use crate::eco::cargo::home::{self as cargo_home, Home};
 use crate::eco::cargo::incremental::{self, Incremental};
+use crate::eco::go::{self, MOD_CACHE};
 use crate::eco::store::{self, STORE};
 use crate::eco::{self, Ecosystem, cargo::CARGO};
 use crate::engine::{self, Interrupt, Interrupted, Options, Pass, Report};
@@ -135,6 +136,8 @@ pub struct Request {
     pub cargo_home: Option<PathBuf>,
     /// Also compress these content-addressed stores, each a group of its own without a lock.
     pub stores: Vec<PathBuf>,
+    /// Also compress this Go module cache, lifting the write bit of its read-only dirs.
+    pub go_modcache: Option<PathBuf>,
     /// One group for every target instead of one per family.
     pub across_families: bool,
     /// Where the filesystem cannot share blocks, share build artifacts as hardlinks.
@@ -563,9 +566,21 @@ impl Session {
                 }
             })
             .collect::<Result<Vec<_>>>()?;
-        // `cargo_home` and the stores are runs of their own: they need no target and no root.
-        let only_home =
-            request.roots.is_empty() && (request.cargo_home.is_some() || !stores.is_empty());
+        let go_modcache = request
+            .go_modcache
+            .as_ref()
+            .map(|dir| {
+                let dir = dir.canonicalize().map_err(Error::at(dir.display()))?;
+                match go::check(&dir) {
+                    Some(why) => Err(Error::Invalid(format!("{}: {why}", dir.display()))),
+                    None => Ok(dir),
+                }
+            })
+            .transpose()?;
+        // The cargo home, the stores and the module cache are runs of their own: they need no
+        // target and no root.
+        let only_home = request.roots.is_empty()
+            && (request.cargo_home.is_some() || !stores.is_empty() || go_modcache.is_some());
         ensure(!request.roots.is_empty() || only_home, || {
             "no roots: name them on the command line or set `roots` in the config file".into()
         })?;
@@ -798,6 +813,21 @@ impl Session {
                 &store_passes,
                 &opts,
                 &STORE,
+                control,
+                &mut report,
+            )?;
+            report.left_busy |= done == Some(Interrupted::OutOfBudget);
+        }
+        // Unpacked module sources, like the cargo home's, but immutable like a store: `compress`
+        // only, no lock.
+        if let Some(dir) = go_modcache.as_ref().filter(|_| !control.stopped()) {
+            let units = MOD_CACHE.units(dir).map_err(Error::at(dir.display()))?;
+            let done = visit(
+                dir,
+                &units,
+                &store_passes,
+                &opts,
+                &MOD_CACHE,
                 control,
                 &mut report,
             )?;

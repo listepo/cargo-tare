@@ -202,6 +202,10 @@ struct RunArgs {
     /// exists there, so only files older than an hour are touched. Repeatable
     #[arg(long, value_name = "DIR")]
     store: Vec<PathBuf>,
+    /// Also compress Go's caches, as `go env` names them: `GOCACHE` as a store, and the unpacked
+    /// modules of `GOMODCACHE`, whose read-only dirs are made writable for a moment each
+    #[arg(long)]
+    go: bool,
     /// Compare every target under the roots with every other, not only the targets of one
     /// repository: unrelated projects do share artifacts, at the price of one wider lock
     #[arg(long)]
@@ -634,10 +638,39 @@ fn request(args: RunArgs, config: &Config) -> Request {
     request
 }
 
+/// `run --go`: `GOCACHE` as a store and `GOMODCACHE` as the module cache, where `go env` says
+/// they are.
+fn go_caches(request: &mut Request) -> Result<()> {
+    let out = std::process::Command::new("go")
+        .args(["env", "GOCACHE", "GOMODCACHE"])
+        .output()
+        .context("`--go` asks `go env` where the caches are, and `go` did not start")?;
+    ensure!(
+        out.status.success(),
+        "`go env` failed: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    let text =
+        String::from_utf8(out.stdout).context("`go env` printed a path that is not UTF-8")?;
+    let mut lines = text.lines();
+    let (cache, modcache) = (lines.next().unwrap_or(""), lines.next().unwrap_or(""));
+    // `GOCACHE=off` is a build without a cache.
+    if !cache.is_empty() && cache != "off" {
+        request.stores.push(PathBuf::from(cache));
+    }
+    ensure!(!modcache.is_empty(), "`go env GOMODCACHE` printed nothing");
+    request.go_modcache = Some(PathBuf::from(modcache));
+    Ok(())
+}
+
 fn run(args: RunArgs) -> Result<Done> {
     let config = load_config(args.config.as_deref())?;
     let (dry_run, json, index) = (args.dry_run, args.json, args.index.clone());
-    let request = request(args, &config);
+    let go = args.go;
+    let mut request = request(args, &config);
+    if go {
+        go_caches(&mut request)?;
+    }
     // Before anything else can fail, so a mistyped flag is named even without a `$HOME`.
     request.check()?;
     let session = open(index, &config)?;

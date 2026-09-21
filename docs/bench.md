@@ -199,6 +199,23 @@ Oracle, the store's own invariant: all 1131 data entries (`*-d`) still hash to t
 SHA-256, and `go build -x std` afterwards runs no `compile` step (0.55 s). `tests/store.rs`
 checks the same on a small module whenever `go` is installed.
 
+## A Go module cache
+
+A copy of this machine's `GOMODCACHE` (24 modules, 9,343 unpacked files; go 1.27.1,
+darwin/arm64) in a temp dir, `run --go` from a release build with `GOMODCACHE` and `GOCACHE`
+pointing at the copies. APFS.
+
+| | before | after | delta |
+| --- | --- | --- | --- |
+| `du` of the module cache | 145.9 MiB | 104.7 MiB | **−41 MiB (−28.3%)** |
+| files compressed | | 1288 of 1293 planned | the rest not compressible enough |
+
+The zips in `cache/download` (35 MiB of the total) are left alone, so the unpacked sources
+alone went from about 111 MiB to 70. Oracle: every module's `h1:` dir hash still equals the
+`.ziphash` `go` recorded when it unpacked it, every file keeps its mode and mtime and every dir
+its mode, and a module built against the copy rebuilds with no `compile` step and passes its
+tests. Without the lift, the same run skips every file with `PermissionDenied`.
+
 ## A SwiftPM package
 
 swift-argument-parser (shallow clone of `main`), Swift 6.4 on macOS 27, APFS: `swift build` and

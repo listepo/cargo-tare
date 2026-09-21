@@ -113,9 +113,10 @@ module sources.
   hash of the content — so a same-content replacement is safe even without a lock, and
   `min-age` keeps the pass away from what a running build is writing. `GOMODCACHE` is the
   equivalent of `--cargo-home`: extracted sources, which went down 69% for cargo. Its dirs are
-  read-only on purpose, so the pass would have to lift and restore directory modes, which is a
-  risk of its own.
-- Worth it only as a generic "compress this immutable cache" mode, not as a Go adapter.
+  read-only on purpose, so the pass has to lift and restore directory modes.
+- Done: `GOCACHE` through `--store` (T33); `run --go` finds both caches and compresses the
+  module cache with its dirs' write bit lifted one batch at a time (T35, `DESIGN.md`, "Go module
+  cache"): 146 MiB to 105 MiB on a real one.
 
 ### Swift and Xcode
 

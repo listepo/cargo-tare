@@ -7,6 +7,7 @@
 pub mod cargo;
 pub mod cmake;
 pub mod dotnet;
+pub mod go;
 pub mod store;
 pub mod swiftpm;
 
@@ -75,6 +76,13 @@ pub trait Ecosystem: Sync {
     /// unit is unsure and lossy passes leave it alone.
     fn tools(&self) -> &'static [&'static str] {
         &[]
+    }
+
+    /// Whether its tool keeps dirs read-only on purpose and `compress` may lift a dir's owner
+    /// write bit for the length of one batch, putting the mode back after it: Go's module cache.
+    /// A file's bytes, mode and mtime never change either way.
+    fn lifts_read_only_dirs(&self) -> bool {
+        false
     }
 
     fn policy(&self) -> Policy;

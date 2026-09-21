@@ -471,7 +471,14 @@ pub fn run_with(
                     report.interrupted = Some(why);
                     break;
                 }
-                apply_compress(batch, &locked, *pass, passes, &mut pass_report);
+                apply_compress(
+                    batch,
+                    &locked,
+                    *pass,
+                    passes,
+                    eco.lifts_read_only_dirs(),
+                    &mut pass_report,
+                )?;
             }
             if report.interrupted.is_some() {
                 round.push(pass_report);
@@ -664,8 +671,10 @@ fn apply_compress(
     locked: &[PathBuf],
     pass: &dyn Pass,
     passes: &[&dyn Pass],
+    lift: bool,
     report: &mut PassReport,
-) {
+) -> io::Result<()> {
+    let lifted = if lift { lift_dirs(batch) } else { Vec::new() };
     let mut staged = Vec::new();
     for member in batch {
         match stage_copy(member, locked) {
@@ -689,6 +698,45 @@ fn apply_compress(
             Err(e) => report.skip(member, failed(&e)),
         }
     }
+    // A dir left writable is what its tool set out to prevent: the run stops and says where.
+    for (dir, mode) in lifted {
+        sys::set_mode(&dir, mode).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("{}: putting its mode {mode:o} back: {e}", dir.display()),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Lifts the owner write bit of every read-only dir that holds a member of `batch`, so a temp
+/// copy can be made and renamed there. Returns each lifted dir with the mode to put back. A dir
+/// that cannot be lifted is left as it is, and its members fail as they would have. On Windows a
+/// read-only dir does not stop anyone from creating files in it: nothing to lift.
+fn lift_dirs(batch: &[Inode]) -> Vec<(PathBuf, u32)> {
+    const OWNER_WRITE: u32 = 0o200;
+    let mut lifted: Vec<(PathBuf, u32)> = Vec::new();
+    if !cfg!(unix) {
+        return lifted;
+    }
+    for dir in batch
+        .iter()
+        .flat_map(|member| &member.paths)
+        .filter_map(|path| path.parent())
+    {
+        if lifted.iter().any(|(done, _)| done == dir) {
+            continue;
+        }
+        let Ok(meta) = fs::symlink_metadata(dir) else {
+            continue;
+        };
+        let mode = sys::mode(&meta);
+        if mode & OWNER_WRITE == 0 && sys::set_mode(dir, mode | OWNER_WRITE).is_ok() {
+            lifted.push((dir.to_path_buf(), mode));
+        }
+    }
+    lifted
 }
 
 /// A private copy of the group's content next to its first path. Costs no space: a clone.
