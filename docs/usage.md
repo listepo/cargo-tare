@@ -109,6 +109,7 @@ config file.
 | `--min-age <SECS>` | leave younger files alone; default 3600 |
 | `--min-size <BYTES>` | leave smaller files alone; default 8192 for compress, 4096 for dedupe |
 | `--cargo-home [DIR]` | also compress the cargo home's unpacked sources, under cargo's `.package-cache` lock |
+| `--store DIR` | also compress a content-addressed store (`GOCACHE`, `~/.cabal/store`, Zig's `o/`); repeatable, no lock, entries older than an hour only |
 | `--across-families` | compare targets of unrelated repositories too; holds every lock for the whole run |
 | `--link-artifacts` | **hazard**: on filesystems without clones, share build artifacts as hardlinks |
 | `--index <FILE>` | content-hash cache; default `~/.cache/dunnage/hashes-v1.bin` |
@@ -195,6 +196,7 @@ lossy = ["orphans"]
 min-age = 3600
 min-size = 8192
 across-families = false
+stores = []  # content-addressed stores to compress, as --store does
 
 [evict]
 idle-days = 30

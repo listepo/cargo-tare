@@ -258,9 +258,9 @@ script left inside a target is nobody's.
 
 The engine takes the adapter instead of a lock kind and locks what `guard` names:
 `Guard::Lock(file)` per unit, `Guard::Shared(file)` once for every unit under it, and nothing for
-`Guard::Quiet`, which gets the tier of "Safety tier without a build lock". `Held` (an embedding
-caller holds the build's lock, R8) and `Immutable` (T33) are in the enum and refused until their
-tasks. `model::scan` records the unit's `last_used` at scan time, so
+`Guard::Quiet`, which gets the tier of "Safety tier without a build lock", or for
+`Guard::Immutable` ("Immutable stores"). `Held` (an embedding caller holds the build's lock, R8)
+is in the enum and refused until its task. `model::scan` records the unit's `last_used` at scan time, so
 `evict` and `incremental` re-check a unit's last build under its lock without asking cargo.
 Family and orphan status come from the owner's project, not from the build dir's parents; for
 cargo the owner is the dir above the target, so nothing changed.
@@ -651,6 +651,36 @@ every file in a fake home, and the benchmark confirms it against a real one by r
 afterwards. The flag takes an optional value: `--cargo-home` alone resolves `CARGO_HOME`, else
 `$HOME/.cargo`. `status --cargo-home` reports the same dirs without touching them, and is opt-in
 because measuring them costs a second full walk.
+
+## Immutable stores (`src/eco/store.rs`)
+
+`--store DIR` names a content-addressed store: `GOCACHE`, `~/.cabal/store`, Zig's `o/`, dune's
+shared cache. Nothing is discovered. The `Store` adapter makes the whole dir one unit under
+`Guard::Immutable`:
+
+- No lock is taken and none exists. What makes compression safe anyway is the store's own rule:
+  a name never gets other bytes. An entry is written once — most tools write a temp file and
+  rename it in — so the only file a pass could race is one still being written, and
+  `engine::IMMUTABLE_MIN_AGE` (one hour) leaves those out of the model whatever `--min-age` says.
+- Only `compress` runs. Dedupe finds nothing where every name is a different content, and no
+  lossy pass ever runs: the unit is always unsure (`Skip::Unsure`), because the store's own tool
+  evicts from it.
+- The group is listed in `Report::quiet` like a `Guard::Quiet` unit.
+- `store::check` refuses, before the run lock is taken: what is not a dir; ccache and sccache (a
+  `ccache.conf`, a `CACHEDIR.TAG` naming ccache, or their default dir names), which compress their
+  own entries; and a dir inside a build dir a registered adapter claims or inside a cargo home,
+  whose files are rewritten under old names. A dir holding a build dir somewhere below is not
+  looked for — that would be a walk of the whole store.
+
+What it does not promise: a tool that rewrites a file under its old name — Zig's `h/`
+manifests, which it rewrites under its own lock — is not a content-addressed store, and naming
+it anyway races like `Guard::Quiet` does, with no process check. The harm is bounded by what a
+cache is: a manifest update lost to the race is a cache miss, not a wrong build. Name `o/` for
+Zig, not the whole cache.
+
+`tests/store.rs`: mtime, mode and content of every entry unchanged; a young entry left alone; no
+lossy pass; `check`'s refusals; the CLI with no root; and, where `go` is installed, a `GOCACHE`
+fixture whose data entries still hash to their names and whose rebuild compiles nothing.
 
 ## CLI surface
 

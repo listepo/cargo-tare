@@ -1241,3 +1241,53 @@ with exactly what it does not promise.
 `just check` (151 tests) and `just check-cross` green. `tests/quiet.rs` 15 runs in a row green;
 the unit test of the busy-error classifier is in `src/engine.rs`. `~/.cache/dunnage` absent after
 every run.
+
+### T33. Compress an immutable content-addressed store
+
+One mode instead of five adapters: `~/.cabal/store`, the Zig caches, dune's shared cache and
+the like hold immutable files under hashed names. `dedupe` finds nothing there by
+construction, and `compress` is safe without a lock for the same reason — a name never gets
+different bytes — with `min-age` keeping the pass off what is being written. The user names the
+dir; nothing is discovered or guessed, and stores that compress themselves (ccache, sccache)
+are refused by their marker files. Done: mtime, mode and content of every file unchanged, the
+owning tool's own verification green on a fixture store, numbers in `docs/bench.md`.
+
+#### Execution plan
+
+1. `src/eco/store.rs`: a `Store` adapter — one unit, the dir itself; `Guard::Immutable`;
+   `ClonesOnly`. `store::check` refuses a dir that is not one: ccache and sccache (a
+   `CACHEDIR.TAG` naming them, `ccache.conf`, their default dir names), and a dir inside a
+   build dir a registered adapter claims or a cargo home.
+2. Engine: `Guard::Immutable` takes no lock, is listed in `Report::quiet`, is always unsure (no
+   lossy pass), and files younger than `engine::IMMUTABLE_MIN_AGE` (one hour) are left out.
+3. `Request::stores`, `--store <DIR>` on `run` (repeatable), `stores = [...]` in the config. A
+   run of stores only needs no root, like `--cargo-home`. Only `compress` runs on a store.
+4. `tests/store.rs`: mtime, mode and content of every file unchanged; ccache refused; young
+   files left alone; a `GOCACHE` fixture (skipped without `go`): after the pass
+   `GODEBUG=gocacheverify=1 go build` is green and `go build -x` compiles nothing.
+5. `docs/bench.md` numbers on a `go build std` fixture cache; `DESIGN.md`, `docs/usage.md`,
+   README synopsis.
+
+#### Result
+
+- `src/eco/store.rs`: the `Store` adapter (one unit, `Guard::Immutable`, `ClonesOnly`) and
+  `store::check`, which refuses what is not a dir, ccache and sccache, and dirs inside a claimed
+  build dir or a cargo home — before the run lock is taken.
+- Engine: `Guard::Immutable` takes no lock, is listed in `Report::quiet`, is always unsure (no
+  lossy pass) and leaves out files younger than `engine::IMMUTABLE_MIN_AGE` (one hour).
+- `--store DIR` (repeatable) on `run`, `stores = [...]` in the config, `Request::stores`. A run
+  of stores alone needs no root; each store is a group of its own with `compress` only.
+- The oracle changed from the card's "the owning tool's own verification": Go's
+  `GODEBUG=gocacheverify=1` did not notice a flipped byte in a data entry, so it proves nothing.
+  The oracle is the store's own invariant instead — every `*-d` entry of `GOCACHE` hashes to its
+  name under SHA-256 — plus `go build -x` compiling nothing afterwards.
+- Numbers in `docs/bench.md`: a `GOCACHE` after `go build std`, 215.6 MiB → 63.6 MiB (−70.5%),
+  1131 entries still matching their names, the rebuild compiled nothing.
+- Docs: `DESIGN.md` "Immutable stores" (with what it does not promise: Zig's `h/` manifests are
+  rewritten, so name `o/`), `docs/usage.md`, README, `docs/architecture.md`.
+
+#### Verified
+
+`just check` (158 tests) and `just check-cross` green; `tests/store.rs` covers mtime, mode and
+content unchanged, the young entry, no lossy pass, the refusals, the CLI and the `GOCACHE`
+oracle. `~/.cache/dunnage` absent after every run.

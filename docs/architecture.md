@@ -324,6 +324,8 @@ nested ones nobody's, every position one family, `seed` choosing by position.
 
 Done in T29: `Guard::Quiet` works, with the tier of `DESIGN.md`, "Safety tier without a build
 lock"; `Ecosystem::tools` names the processes the check looks for. No adapter uses it yet.
+Done in T33: `Guard::Immutable` and the `Store` adapter behind `--store`; `DESIGN.md`,
+"Immutable stores".
 
 The daemon's loop lives in the binary's half because only a process has triggers; everything
 it *does* is a `Session` call. How the tool is invoked without cargo is settled with the first

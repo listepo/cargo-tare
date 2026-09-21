@@ -25,6 +25,9 @@ const MAX_ROUNDS: usize = 8;
 /// Files of a [`Guard::Quiet`] unit younger than this are left out of the model: with no lock,
 /// a file the build wrote an hour ago may be one it is still writing. No pass setting lowers it.
 pub const QUIET_MIN_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+/// The same floor for a [`Guard::Immutable`] store: an entry is never rewritten, only written
+/// once, and an hour keeps the passes off one still being written.
+pub const IMMUTABLE_MIN_AGE: Duration = Duration::from_secs(60 * 60);
 
 /// How a replacement gets its bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -173,7 +176,7 @@ pub struct Report {
     /// Units a build was seen in: skipped because it held their lock or its tool ran there, or
     /// worked on until one of their files was found in use.
     pub busy: Vec<PathBuf>,
-    /// Units worked on without a lock, under the weaker tier of [`Guard::Quiet`].
+    /// Units worked on without a lock: [`Guard::Quiet`] and [`Guard::Immutable`] ones.
     pub quiet: Vec<PathBuf>,
     pub temps_removed: usize,
     pub passes: Vec<PassReport>,
@@ -256,14 +259,14 @@ pub struct ProfileLock {
 }
 
 impl ProfileLock {
-    /// The lock `guard` names. `None` when a build holds it, and for [`Guard::Quiet`], which
-    /// has none to take. A missing lock file is an error: not a unit. The other guards without
-    /// a lock file are not implemented and refused.
+    /// The lock `guard` names. `None` when a build holds it, and for [`Guard::Quiet`] and
+    /// [`Guard::Immutable`], which have none to take. A missing lock file is an error: not a
+    /// unit. [`Guard::Held`] is not implemented and refused.
     pub fn try_guard(guard: &Guard) -> io::Result<Option<Self>> {
         match guard {
             Guard::Lock(file) | Guard::Shared(file) => Self::try_lock_file(file),
-            Guard::Quiet => Ok(None),
-            Guard::Held | Guard::Immutable => Err(io::Error::new(
+            Guard::Quiet | Guard::Immutable => Ok(None),
+            Guard::Held => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 format!("{guard:?} is not implemented"),
             )),
@@ -312,6 +315,8 @@ pub fn run_with(
     let mut shared: Vec<(Guard, bool)> = Vec::new();
     // Quiet units where a check could not say "no build here": lossy passes leave them alone.
     let mut unsure: Vec<PathBuf> = Vec::new();
+    // Units without a lock, with the age their files need to be in the model.
+    let mut floors: Vec<(PathBuf, Duration)> = Vec::new();
     for dir in dirs {
         let guard = eco.guard(&dir);
         let held = match &guard {
@@ -321,10 +326,18 @@ pub fn run_with(
                     if found.is_none() {
                         unsure.push(dir.clone());
                     }
+                    floors.push((dir.clone(), QUIET_MIN_AGE));
                     report.quiet.push(dir.clone());
                     true
                 }
             },
+            // Nothing a lossy pass could want is here: the store's own tool evicts from it.
+            Guard::Immutable => {
+                unsure.push(dir.clone());
+                floors.push((dir.clone(), IMMUTABLE_MIN_AGE));
+                report.quiet.push(dir.clone());
+                true
+            }
             Guard::Shared(_) => match shared.iter().find(|(seen, _)| *seen == guard) {
                 Some(&(_, held)) => held,
                 None => {
@@ -350,7 +363,7 @@ pub fn run_with(
         }
     }
 
-    let mut profiles = scan_all(&locked, eco, &report.quiet, &mut unsure)?;
+    let mut profiles = scan_all(&locked, eco, &floors, &mut unsure)?;
     if !opts.dry_run {
         for temp in profiles.iter().flat_map(|p| &p.stale_temps) {
             fs::remove_file(temp)?;
@@ -461,7 +474,7 @@ pub fn run_with(
             if pass_report.applied > 0 || removal_tried {
                 // ponytail: full rescan so the next pass sees the new inodes; patch the model in
                 // place if scan time ever shows up in the benchmarks.
-                profiles = scan_all(&locked, eco, &report.quiet, &mut unsure)?;
+                profiles = scan_all(&locked, eco, &floors, &mut unsure)?;
             }
             progressed |= pass_report.applied > 0;
             round.push(pass_report);
@@ -482,23 +495,23 @@ pub fn run_with(
     Ok(report)
 }
 
-/// Scans `dirs`. In the `quiet` ones, files younger than [`QUIET_MIN_AGE`] are left out, and a
-/// unit that had any becomes `unsure`.
+/// Scans `dirs`. In a unit with a floor, files younger than it are left out, and a unit that had
+/// any becomes `unsure`.
 fn scan_all(
     dirs: &[PathBuf],
     eco: &dyn Ecosystem,
-    quiet: &[PathBuf],
+    floors: &[(PathBuf, Duration)],
     unsure: &mut Vec<PathBuf>,
 ) -> io::Result<Vec<Profile>> {
     let now = SystemTime::now();
-    let young = |inode: &Inode| {
-        now.duration_since(inode.stamp.mtime)
-            .map_or(true, |age| age < QUIET_MIN_AGE)
-    };
     let mut profiles = Vec::with_capacity(dirs.len());
     for dir in dirs {
         let mut profile = model::scan(dir, eco)?;
-        if quiet.contains(dir) {
+        if let Some((_, floor)) = floors.iter().find(|(unit, _)| unit == dir) {
+            let young = |inode: &Inode| {
+                now.duration_since(inode.stamp.mtime)
+                    .map_or(true, |age| age < *floor)
+            };
             let before = profile.inodes.len();
             profile.inodes.retain(|inode| !young(inode));
             if profile.inodes.len() < before && !unsure.contains(dir) {

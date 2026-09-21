@@ -5,6 +5,7 @@
 //! Cargo is the only adapter so far. The shape is `docs/architecture.md`, "The adapter".
 
 pub mod cargo;
+pub mod store;
 
 use std::ffi::OsStr;
 use std::io;
@@ -92,8 +93,8 @@ pub enum Guard {
     /// tier without a build lock": young files are left out, a running build tool makes the
     /// unit busy, and lossy passes run only where nothing says "maybe".
     Quiet,
-    /// A content-addressed store whose names never get other bytes (T33). Not implemented; the
-    /// engine refuses it.
+    /// A content-addressed store whose names never get other bytes: no lock, files younger than
+    /// an hour left out, and no lossy pass. `DESIGN.md`, "Immutable stores".
     Immutable,
 }
 

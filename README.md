@@ -54,6 +54,7 @@ dunnage advise ~/code            # read-only: what makes these targets bigger
 dunnage seed [--from <DIR>] [--dry-run] [--index <FILE>] [<DIR>]
 dunnage worktree add [--dry-run] [--index <FILE>] <GIT ARGS>...
 dunnage run --cargo-home ~/code     # and the registry sources in ~/.cargo
+dunnage run --store "$(go env GOCACHE)"  # a content-addressed store, compress only
 dunnage run --dry-run --lossy orphans ~/code
 dunnage run --dry-run --lossy evict --evict-idle-days 30 ~/code
 dunnage run --lossy evict --evict-max-total-gib 50 ~/code
@@ -149,6 +150,15 @@ Measured on a clone of a real home (`docs/bench.md`): 1.52 GiB of registry sourc
 The run needs no target dirs of its own, so `dunnage run --cargo-home` alone is a valid run,
 and `dunnage status --cargo-home` reports the same dirs without touching them (it is opt-in
 because measuring them costs a second walk).
+
+`--store DIR` compresses a content-addressed store: `GOCACHE`, `~/.cabal/store`, Zig's global
+`o/`, dune's shared cache — dirs whose files are named by their content and never get other
+bytes. There is no lock to take, so the tool touches only entries older than an hour, runs
+`compress` and nothing else, and never a lossy pass; the store's own tool evicts from it. It
+refuses ccache and sccache dirs, which compress their own entries, and any dir inside a cargo
+target or a cargo home. A `GOCACHE` after `go build std` went from 216 MiB to 64 MiB, and the
+build afterwards compiled nothing (`docs/bench.md`). Repeatable; `stores = [...]` in the config
+does the same on every run.
 
 **advise** changes nothing: it reads the manifests and cargo configs of the projects it finds
 and names what makes their targets bigger than they need to be — full debuginfo where

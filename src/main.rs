@@ -141,6 +141,10 @@ struct RunArgs {
     /// under cargo's own `.package-cache` lock [default: $CARGO_HOME, else ~/.cargo]
     #[arg(long, value_name = "DIR", num_args = 0..=1, default_missing_value = "")]
     cargo_home: Option<PathBuf>,
+    /// Also compress a content-addressed store: `GOCACHE`, `~/.cabal/store`, Zig's `o/`. No lock
+    /// exists there, so only files older than an hour are touched. Repeatable
+    #[arg(long, value_name = "DIR")]
+    store: Vec<PathBuf>,
     /// Compare every target under the roots with every other, not only the targets of one
     /// repository: unrelated projects do share artifacts, at the price of one wider lock
     #[arg(long)]
@@ -473,6 +477,9 @@ fn request(args: RunArgs, config: &Config) -> Request {
         request.min_size = Some(bytes);
     }
     request.cargo_home = home_flag(args.cargo_home);
+    if !args.store.is_empty() {
+        request.stores = args.store;
+    }
     request.across_families |= args.across_families;
     request.link_artifacts = args.link_artifacts;
     request.until_settled = true;

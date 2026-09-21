@@ -14,6 +14,7 @@ too slow, see `DESIGN.md`).
 | rust-std for `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc` | `rustup target add --toolchain $(rustc --version --verbose \| sed -n 's/^release: //p') <triple>` — without `--toolchain` rustup installs into the *default* toolchain, not the one `rust-toolchain.toml` pins, and the cross build then fails with `E0463: can't find crate for core` | `just check-cross`: the other two platforms must compile | https://github.com/rust-lang/rust |
 | hyperfine | global (brew; mise ships an x86_64 build that will not run on arm64) | `scripts/bench.sh`: build timings | https://github.com/sharkdp/hyperfine |
 | sccache | global (mise) | `scripts/bench.sh`: the variant the tool is compared against | https://github.com/mozilla/sccache |
+| go | global (brew), optional | `tests/store.rs`: the `GOCACHE` oracle for `--store`, skipped without it; `docs/bench.md` numbers | https://github.com/golang/go |
 | lima | global (brew / mise) | A Linux VM with a btrfs loopback image: the only way to test the Linux half from a Mac | https://github.com/lima-vm/lima |
 
 ## cargo

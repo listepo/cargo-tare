@@ -183,6 +183,22 @@ inside the crates (`tests/images/`, `res/`), reported as "not compressible enoug
 `git/checkouts` was 0 here — this machine has no git dependencies — so that half is covered by
 the fixture test only.
 
+## A content-addressed store: `GOCACHE`
+
+`--store` on a `GOCACHE` of its own: `go build std` (go 1.27.1, darwin/arm64) into an empty
+cache in a temp dir, every file's mtime moved back past the store's one-hour floor, then
+`dunnage run --store <cache>` from a release build. APFS.
+
+| | before | after | delta |
+| --- | --- | --- | --- |
+| `du` of the cache (2659 files) | 215.6 MiB | 63.6 MiB | **−152 MiB (−70.5%)** |
+| files compressed | | 368 of 2659 | the rest are under compress's 8 KiB floor |
+| wall time of the run | | 2.65 s | |
+
+Oracle, the store's own invariant: all 1131 data entries (`*-d`) still hash to their names under
+SHA-256, and `go build -x std` afterwards runs no `compile` step (0.55 s). `tests/store.rs`
+checks the same on a small module whenever `go` is installed.
+
 ## sccache, for comparison
 
 | | clean build | target | cache |

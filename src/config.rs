@@ -30,6 +30,9 @@ pub struct Config {
     /// Compare targets of different repositories too, as `--across-families` does.
     #[serde(default)]
     pub across_families: bool,
+    /// Content-addressed stores to compress on every run, as `--store` does.
+    #[serde(default)]
+    pub stores: Vec<PathBuf>,
     #[serde(default)]
     pub evict: Evict,
     #[serde(default)]

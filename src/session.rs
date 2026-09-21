@@ -25,6 +25,7 @@ use crate::eco::cargo::advise::{self, Finding, Kind, Note};
 use crate::eco::cargo::doc::{self, Doc, Docs};
 use crate::eco::cargo::home::{self as cargo_home, Home};
 use crate::eco::cargo::incremental::{self, Incremental};
+use crate::eco::store::{self, STORE};
 use crate::eco::{self, Ecosystem, cargo::CARGO};
 use crate::engine::{self, Interrupt, Interrupted, Options, Pass, Report};
 use crate::error::{Error, Result};
@@ -116,6 +117,8 @@ pub struct Request {
     pub min_size: Option<u64>,
     /// Also compress this cargo home's unpacked sources, under its own lock.
     pub cargo_home: Option<PathBuf>,
+    /// Also compress these content-addressed stores, each a group of its own without a lock.
+    pub stores: Vec<PathBuf>,
     /// One group for every target instead of one per family.
     pub across_families: bool,
     /// Where the filesystem cannot share blocks, share build artifacts as hardlinks.
@@ -142,6 +145,7 @@ impl Request {
             min_age: config.min_age.map(Duration::from_secs),
             min_size: config.min_size,
             across_families: config.across_families,
+            stores: config.stores.clone(),
             skip_families: config
                 .family
                 .iter()
@@ -423,8 +427,22 @@ impl Session {
             lossy: request.lossy.clone(),
             until_settled: request.until_settled,
         };
-        // `cargo_home` is a run of its own: it needs no target and no root.
-        let only_home = request.roots.is_empty() && request.cargo_home.is_some();
+        // Named stores, canonical so the report and the unit agree, and each one checked
+        // before anything is touched.
+        let stores = request
+            .stores
+            .iter()
+            .map(|dir| {
+                let dir = dir.canonicalize().map_err(Error::at(dir.display()))?;
+                match store::check(&dir) {
+                    Some(why) => Err(Error::Invalid(format!("--store {}: {why}", dir.display()))),
+                    None => Ok(dir),
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
+        // `cargo_home` and the stores are runs of their own: they need no target and no root.
+        let only_home =
+            request.roots.is_empty() && (request.cargo_home.is_some() || !stores.is_empty());
         ensure(!request.roots.is_empty() || only_home, || {
             "no roots: name them on the command line or set `roots` in the config file".into()
         })?;
@@ -611,6 +629,24 @@ impl Session {
                 &home_passes,
                 &opts,
                 &adapter,
+                control,
+                &mut report,
+            )?;
+            report.left_busy |= done == Some(Interrupted::OutOfBudget);
+        }
+        // A store gets `compress` only: dedupe finds nothing in it by construction.
+        let store_passes: Vec<&dyn Pass> = passes
+            .iter()
+            .copied()
+            .filter(|pass| pass.name() == compress::NAME)
+            .collect();
+        for dir in stores.iter().filter(|_| !control.stopped()) {
+            let done = visit(
+                dir,
+                std::slice::from_ref(dir),
+                &store_passes,
+                &opts,
+                &STORE,
                 control,
                 &mut report,
             )?;

@@ -15,7 +15,6 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | T30 | todo | P2 | 4 | 0% | |
 | T31 | todo | P2 | 4 | 0% | |
 | T32 | todo | P2 | 4 | 0% | |
-| T33 | todo | P2 | 3 | 0% | |
 | T34 | todo | P2 | 4 | 0% | |
 | T37 | todo | P2 | 3 | 0% | |
 | T38 | todo | P2 | 3 | 0% | |
@@ -24,7 +23,7 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | T35 | todo | P3 | 2 | 0% | |
 
 Blockers, take these first. **T24** blocks T21: nothing on Windows can be tested without it.
-**T33** blocks T35. T35 is the
+T35 is the
 lowest priority in the plan by the creator's word: take it only when nothing else is free.
 
 Decisions the plan is built on, all the creator's: the tool runs as a CLI **and** as a daemon
@@ -151,16 +150,6 @@ not apply — the build dir is full of absolute paths — and `advise` recommend
 `file_clone = true` for that job instead. No lock: needs T29, and the spike first settles
 whether current Ninja takes one. Plain Make has no marker and builds in the source tree: out of
 scope. Oracle: `ninja -n` after a pass plans nothing.
-
-### T33. Compress an immutable content-addressed store
-
-One mode instead of five adapters: `~/.cabal/store`, the Zig caches, dune's shared cache and
-the like hold immutable files under hashed names. `dedupe` finds nothing there by
-construction, and `compress` is safe without a lock for the same reason — a name never gets
-different bytes — with `min-age` keeping the pass off what is being written. The user names the
-dir; nothing is discovered or guessed, and stores that compress themselves (ccache, sccache)
-are refused by their marker files. Done: mtime, mode and content of every file unchanged, the
-owning tool's own verification green on a fixture store, numbers in `docs/bench.md`.
 
 ### T34. Daemon mode: `dunnage daemon`
 
