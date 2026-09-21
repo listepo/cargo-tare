@@ -185,3 +185,58 @@ macOS and Linux first; Windows needs ReFS and therefore T21. `seed` does not app
   - a new source mtime does make it build.
 - The same oracle holds by hand after `dunnage run` on the spike fixture.
 - `~/.cache/dunnage` is absent.
+
+### T32. C and C++: CMake, Meson and Ninja build dirs
+
+`compress` is the strong case — uncompressed DWARF in objects and static libraries; cargo's own
+`.o` files went to ~5%. `orphans` is easier than for cargo: `CMakeCache.txt` records
+`CMAKE_HOME_DIRECTORY`, so "the source is gone" is one `stat`. `dedupe` is expected to find
+little (absolute paths in objects) and is measured, not assumed; never hardlinks. `seed` does
+not apply — the build dir is full of absolute paths — and `advise` recommends `ccache` with
+`file_clone = true` for that job instead. No lock: needs T29, and the spike first settles
+whether current Ninja takes one. Plain Make has no marker and builds in the source tree: out of
+scope. Oracle: `ninja -n` after a pass plans nothing.
+
+#### Execution plan
+
+This machine has `cmake` 3.31 and a C compiler, but no `ninja` and no `meson`, and installing
+them is a new program for the creator to approve. So this task covers CMake build dirs made by
+any generator and is verified with the Makefiles one. The Ninja lock question, Meson, and a
+Ninja oracle are split off as T32.1.
+
+1. `src/eco/cmake.rs`:
+   - claim a dir holding `CMakeCache.txt`, as one unit;
+   - the owner is `CMAKE_HOME_DIRECTORY` from the cache, and the manifest `CMakeLists.txt`;
+   - `Guard::Quiet`, with `cmake`, `ninja`, `make`, `gmake` and `ctest` as the tools;
+   - clones only, and no `seed`.
+2. Tests (`tests/cmake.rs`):
+   - fixtures for the claim, the owner read from the cache, and an owner that is gone;
+   - with `cmake` and `cc`, a real project built with `-g`, then aged;
+   - the oracle: after compress + dedupe, `cmake --build` builds and links nothing, and the
+     binary runs; a new source mtime makes it build.
+3. Measure on a fixture; docs (README, usage, DESIGN, bench), `toolchain.md`; T32.1 card.
+
+#### Result
+
+- `src/eco/cmake.rs`: a dir holding `CMakeCache.txt` is one `Guard::Quiet` unit, clones only.
+  The owner is the cache's `CMAKE_HOME_DIRECTORY`, the manifest its `CMakeLists.txt`, so
+  `project_gone` and orphans work as for other ecosystems. An in-source build (the source dir is
+  the build dir or inside it, compared as real paths) is never claimed.
+- Registered after .NET. Docs: README, usage, DESIGN (CMake section), bench, `toolchain.md`.
+- fmt debug with tests: the build dir went from 157.7 MiB to 52.3 MiB (−66.8%); compress freed
+  105.4 MiB, dedupe 2.5 MiB.
+- Not done here: the `ccache` hint in `advise`, which reads cargo targets only; Ninja and Meson
+  (T32.1).
+
+#### Verified
+
+- `just check` (179 tests) and `just check-cross` pass.
+- `tests/cmake.rs`:
+  - a build dir next to its source tree is claimed, owned by it, and shows as project gone once
+    the source dir is removed;
+  - an in-source build, and a build dir holding its source dir, are not claimed;
+  - a real Makefiles project with two executables, aged two days: after compress + dedupe,
+    `cmake --build` prints no `Building` or `Linking`, both binaries run, and a new source mtime
+    makes it build.
+- On fmt after `dunnage run`: `cmake --build` builds nothing and 23 of 23 `ctest` tests pass.
+- `~/.cache/dunnage` is absent; no build lock files are left in `$TMPDIR`.

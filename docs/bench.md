@@ -216,6 +216,22 @@ run, and the `math` example still adds. The largest share is `SDKExplicitPrecomp
 `ModuleCache.noindex`, per package copies of SDK modules: more packages on one machine would
 give dedupe more to share, not measured yet.
 
+## A CMake project
+
+fmt (shallow clone of `master`, `6d71f74`), AppleClang on macOS 27, APFS: configured with
+`-DCMAKE_BUILD_TYPE=Debug -DFMT_TEST=ON`, Unix Makefiles, `cmake --build -j 8`, every file then
+moved back two days past the quiet tier's floor, and `dunnage run --min-age 0 build` from a
+release build.
+
+| | before | after | delta |
+| --- | --- | --- | --- |
+| `du` of `build` | 157.7 MiB | 52.3 MiB | **−105 MiB (−66.8%)** |
+| compress | | 158 files, 105.4 MiB freed | |
+| dedupe | | 16 files, 2.5 MiB freed | |
+
+Oracle: `cmake --build build -j 8` afterwards prints no `Building` or `Linking` line, and all 23
+tests pass under `ctest`.
+
 ## sccache, for comparison
 
 | | clean build | target | cache |

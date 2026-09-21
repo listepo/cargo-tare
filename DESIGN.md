@@ -747,6 +747,21 @@ Not found yet: `UseArtifactsOutput`, whose `artifacts/obj/<project>` has no proj
 it. A .NET 10 SDK with missing workload manifests fails every build, the case on the machine
 the tests were written on; the tests pin a 9.0 SDK with `global.json`.
 
+## CMake (`src/eco/cmake.rs`)
+
+- **Claim.** A dir holding `CMakeCache.txt`, whatever the generator. The whole dir is one unit.
+  The owner is the source dir the cache records as `CMAKE_HOME_DIRECTORY`; the manifest is its
+  `CMakeLists.txt`. A build dir sits anywhere, so its place says nothing.
+- **Never in-source.** A dir whose source dir is itself or lies inside it is not claimed,
+  compared as real paths: a lossy pass removing that unit would remove the sources.
+- **No lock.** `Guard::Quiet`, with `cmake`, `ninja`, `make`, `gmake` and `ctest` as the tools.
+- **Clones only.** `ar` may update an archive in place.
+- **No seed.** The cache and the generated build files hold absolute paths.
+
+The oracle is `cmake --build` with the Makefiles generator: after compress and dedupe it prints
+no `Building` and no `Linking` line, and the binaries still run; a new mtime on a source makes it
+build again. Ninja and Meson build dirs are T32.1.
+
 ## CLI surface
 
 ```

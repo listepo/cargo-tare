@@ -179,6 +179,13 @@ and lossy passes run only where that check could answer. Equal files are shared 
 never by hardlinks, even with `--link-artifacts`: MSBuild's `Copy` writes through a hardlink into
 every other path. `UseArtifactsOutput` (`artifacts/`) is not found yet.
 
+CMake build dirs are found by `CMakeCache.txt`, wherever they are, and go through the same
+no-lock tier: a running `cmake`, `make`, `ninja` or `ctest` in or around one makes it busy, and
+equal files are shared by clones only. The owner is the source dir the cache names, so a build
+dir whose `CMakeLists.txt` is gone shows up as such. An in-source build (`cmake .`) is never
+touched: there the build dir is the source tree. On fmt built in debug with its tests, the build
+dir went from 158 MiB to 52 MiB and the next `cmake --build` built nothing (`docs/bench.md`).
+
 **advise** changes nothing: it reads the manifests and cargo configs of the projects it finds
 and names what makes their targets bigger than they need to be — full debuginfo where
 `line-tables-only` would do, dependency debuginfo nobody steps into, a missing `strip` in

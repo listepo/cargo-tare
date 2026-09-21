@@ -91,6 +91,10 @@ in the project makes it busy, and dedupe never hardlinks there. MSBuild's worker
 compiler server stay alive for minutes after a build; `dotnet build-server shutdown` ends them
 if they keep a project busy.
 
+CMake build dirs (any dir holding `CMakeCache.txt`) are treated the same way: files older than
+a day only, a `cmake`, `make`, `gmake`, `ninja` or `ctest` process working there makes the dir
+busy, clones only. A build dir configured in the source tree itself (`cmake .`) is skipped.
+
 ## Commands
 
 ### `dunnage status [--json] [--cargo-home [DIR]] [ROOT]...`

@@ -13,7 +13,7 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | T24 | todo | P1 | 3 | 0% | |
 | T21 | todo | P2 | 5 | 0% | |
 | T30.1 | todo | P2 | 3 | 0% | |
-| T32 | todo | P2 | 4 | 0% | |
+| T32.1 | todo | P2 | 2 | 0% | |
 | T34 | todo | P2 | 4 | 0% | |
 | T38.1 | todo | P2 | 3 | 0% | |
 | T39 | todo | P3 | 2 | 0% | |
@@ -144,16 +144,13 @@ library stand in for NuGet copies — each `bin/` holds its own copy of `Lib.dll
    control: a new mtime on a source makes it compile.
 3. Measure on the two-app fixture; docs (README, usage, DESIGN, bench), `toolchain.md`.
 
-### T32. C and C++: CMake, Meson and Ninja build dirs
+### T32.1. C and C++: Ninja and Meson
 
-`compress` is the strong case — uncompressed DWARF in objects and static libraries; cargo's own
-`.o` files went to ~5%. `orphans` is easier than for cargo: `CMakeCache.txt` records
-`CMAKE_HOME_DIRECTORY`, so "the source is gone" is one `stat`. `dedupe` is expected to find
-little (absolute paths in objects) and is measured, not assumed; never hardlinks. `seed` does
-not apply — the build dir is full of absolute paths — and `advise` recommends `ccache` with
-`file_clone = true` for that job instead. No lock: needs T29, and the spike first settles
-whether current Ninja takes one. Plain Make has no marker and builds in the source tree: out of
-scope. Oracle: `ninja -n` after a pass plans nothing.
+Split off from T32, which handles CMake build dirs and was verified with the Makefiles
+generator only, because `ninja` and `meson` are not installed here. Settle whether current
+Ninja takes a lock on the build dir, claim Meson build dirs (`meson-private/`, whose
+`coredata.dat` records the source dir), and add the oracle `ninja -n` plans nothing after a
+pass. Needs the creator's approval to install `ninja` and `meson` (brew or mise).
 
 ### T34. Daemon mode: `dunnage daemon`
 
