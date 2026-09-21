@@ -132,3 +132,56 @@ creator's call at claim time. `seed` does not apply — the dir name is a hash o
 By hand on swift-argument-parser: `swift build -c release -v` runs no compile task after the
 run, as before it, and the `math` example still adds. `~/.cache/dunnage` is absent, and no
 lock file is left in the temp dir.
+
+### T31. .NET: `bin/` and `obj/`
+
+The highest dedupe yield in the study: every project's `bin/` holds its own copy of every
+transitive NuGet assembly, byte-identical to the one in `~/.nuget/packages`. Discovery by
+`obj/project.assets.json` next to a project file, `artifacts/` with `UseArtifactsOutput`.
+**Clones only, never the hardlink fallback** — MSBuild's `Copy` overwrites in place, which is
+how its own hardlink option corrupts the NuGet cache (dotnet/msbuild#8273); `--link-artifacts`
+must be refused here, not merely off. No lock, and on Windows worker nodes keep files open:
+needs T29. Oracle: `dotnet build` twice, the second reports every target skipped — that also
+settles whether `CoreCompileInputs.cache` survives a same-content, same-mtime replacement.
+macOS and Linux first; Windows needs ReFS and therefore T21. `seed` does not apply.
+
+#
+
+#### Result
+
+- Spike: the .NET 10.0.401 SDK here fails every build (workload manifests missing; the repair
+  changes the system install and was not run). 9.0.306, pinned by `global.json`, builds offline.
+  Nothing was downloaded: two apps with a `ProjectReference` to one library stand in for NuGet
+  copies.
+- `src/eco/dotnet.rs`, registered after SwiftPM:
+  - it claims `obj/` with `project.assets.json`, and `bin/` next to such an `obj/`, each as one
+    unit;
+  - the owner is the project dir, and the manifest the project file that
+    `obj/<file>.nuget.dgspec.json` names;
+  - `Guard::Quiet`, with `dotnet`, `MSBuild` and `VBCSCompiler` as the tools;
+  - `Sharing::ClonesOnly`, so `--link-artifacts` never links here;
+  - no `seed`.
+- `CoreCompileInputs.cache` survives a same-content, same-mtime replacement: MSBuild builds
+  nothing after dedupe + compress.
+- The yield is not measured: it needs NuGet packages, and the cache here is empty. This is said
+  in `docs/bench.md`.
+- `UseArtifactsOutput` is not found yet; `DESIGN.md` says so.
+- Docs updated: `README.md`, `docs/usage.md`, the `DESIGN.md` .NET section, `docs/bench.md`, and
+  `toolchain.md` (`dotnet` 9, optional).
+
+#### Verified
+
+- `just check` (176 tests) and `just check-cross` pass.
+- `tests/dotnet.rs`, fixtures:
+  - `bin/` and `obj/` of a restored project are claimed, and those of an unrestored one are not;
+  - the manifest is the recorded project file even with a second one next to it, and deleting
+    it marks the project gone;
+  - hardlinks are refused even when asked for.
+- `tests/dotnet.rs`, with a .NET 9 SDK:
+  - three projects, built and then aged two days;
+  - a control build is a no-op;
+  - after compress + dedupe, `dotnet build -v:n` skips every `CoreCompile` and copies nothing,
+    and the app still runs;
+  - a new source mtime does make it build.
+- The same oracle holds by hand after `dunnage run` on the spike fixture.
+- `~/.cache/dunnage` is absent.

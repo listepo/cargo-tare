@@ -85,6 +85,12 @@ remove them. Dependency checkouts in `.build/checkouts` are not touched. A packa
 a symlinked `--package-path`, or with `--scratch-path`, takes its lock under another name: run
 the tool when no such build is going on.
 
+.NET projects (`bin/` and `obj/` next to a restored project file) go through the passes as
+well, with no lock to take: only files older than a day are touched, a `dotnet` process working
+in the project makes it busy, and dedupe never hardlinks there. MSBuild's worker nodes and the
+compiler server stay alive for minutes after a build; `dotnet build-server shutdown` ends them
+if they keep a project busy.
+
 ## Commands
 
 ### `dunnage status [--json] [--cargo-home [DIR]] [ROOT]...`

@@ -725,6 +725,28 @@ by itself in swiftbuild, so the oracle builds the configuration that was built l
 Known limit: a build started through a symlinked `--package-path`, or with `--scratch-path`,
 locks a file under a name derived from that other path, which the adapter cannot know.
 
+## .NET (`src/eco/dotnet.rs`)
+
+- **Claim.** `obj/` holding `project.assets.json`, which every restore writes, and `bin/` next
+  to such an `obj/`. Each dir is one unit: MSBuild writes all of it in one build and nothing
+  guards a part of it. The owner is the project dir; the manifest the project file restore
+  recorded as `obj/<project file>.nuget.dgspec.json`, since one dir may hold several.
+- **No lock.** `Guard::Quiet`: the one-day floor, and `dotnet`, `MSBuild` and `VBCSCompiler`
+  as the tools whose current dir makes a unit busy. Worker nodes and the compiler server stay
+  alive after a build and keep their project busy until they exit; that is the safe side.
+- **Clones only.** MSBuild's `Copy` overwrites a destination in place, which is how its own
+  hardlink option corrupts the NuGet cache (dotnet/msbuild#8273). `Sharing::ClonesOnly` makes
+  `--link-artifacts` a no-op here, whatever the filesystem.
+- **No seed.** Outputs carry absolute paths (`*.FileListAbsolute.txt`, `project.assets.json`).
+
+The oracle is `dotnet build -v:n`: every `CoreCompile` it reaches is skipped as up to date and
+no `Copy` task copies a file. `CoreCompileInputs.cache` survives a same-content, same-mtime
+replacement: the build after dedupe and compress is a no-op.
+
+Not found yet: `UseArtifactsOutput`, whose `artifacts/obj/<project>` has no project file next to
+it. A .NET 10 SDK with missing workload manifests fails every build, the case on the machine
+the tests were written on; the tests pin a 9.0 SDK with `global.json`.
+
 ## CLI surface
 
 ```

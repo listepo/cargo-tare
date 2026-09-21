@@ -13,7 +13,6 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | T24 | todo | P1 | 3 | 0% | |
 | T21 | todo | P2 | 5 | 0% | |
 | T30.1 | todo | P2 | 3 | 0% | |
-| T31 | todo | P2 | 4 | 0% | |
 | T32 | todo | P2 | 4 | 0% | |
 | T34 | todo | P2 | 4 | 0% | |
 | T38.1 | todo | P2 | 3 | 0% | |
@@ -126,17 +125,24 @@ without writing into the real `~/Library` (`xcodebuild -derivedDataPath` in a te
 candidate; whether it writes `info.plist` there is the first thing to check). Oracle: a second
 `xcodebuild` compiles nothing.
 
-### T31. .NET: `bin/` and `obj/`
+### Execution plan
 
-The highest dedupe yield in the study: every project's `bin/` holds its own copy of every
-transitive NuGet assembly, byte-identical to the one in `~/.nuget/packages`. Discovery by
-`obj/project.assets.json` next to a project file, `artifacts/` with `UseArtifactsOutput`.
-**Clones only, never the hardlink fallback** — MSBuild's `Copy` overwrites in place, which is
-how its own hardlink option corrupts the NuGet cache (dotnet/msbuild#8273); `--link-artifacts`
-must be refused here, not merely off. No lock, and on Windows worker nodes keep files open:
-needs T29. Oracle: `dotnet build` twice, the second reports every target skipped — that also
-settles whether `CoreCompileInputs.cache` survives a same-content, same-mtime replacement.
-macOS and Linux first; Windows needs ReFS and therefore T21. `seed` does not apply.
+Spike: SDK 10.0.401 on this machine fails every build (workload manifests missing; the fix,
+`dotnet workload repair`, changes the system install and is not ours to run). SDK 9.0.306,
+pinned by a `global.json` in the temp dir, builds offline with `NUGET_PACKAGES` in the temp dir.
+The NuGet cache is empty and nothing is downloaded: two apps with a `ProjectReference` to one
+library stand in for NuGet copies — each `bin/` holds its own copy of `Lib.dll`, the same case.
+
+1. `src/eco/dotnet.rs`: claim `obj/` holding `project.assets.json`, and `bin/` next to such an
+   `obj/`; each is one unit; owner the project dir; manifest the project file named by
+   `obj/<name>.nuget.dgspec.json`; `Guard::Quiet` with `dotnet`, `MSBuild`, `VBCSCompiler` as
+   tools; `Sharing::ClonesOnly`, so `--link-artifacts` can never link here; no `seed`.
+   `UseArtifactsOutput` (`artifacts/`) has no owner next to it: left for later, said in docs.
+2. Tests (`tests/dotnet.rs`): fixtures for claim, units, manifest and guard; with `dotnet` 9
+   present, the oracle: sources and outputs aged together, dedupe + compress, then
+   `dotnet build -v:n` skips `CoreCompile` and copies nothing, and the app runs. A negative
+   control: a new mtime on a source makes it compile.
+3. Measure on the two-app fixture; docs (README, usage, DESIGN, bench), `toolchain.md`.
 
 ### T32. C and C++: CMake, Meson and Ninja build dirs
 

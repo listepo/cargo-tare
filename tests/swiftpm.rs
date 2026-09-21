@@ -253,11 +253,11 @@ fn after_compress_and_dedupe_swift_builds_nothing_and_the_binary_runs() {
     compress.min_age = Duration::ZERO;
     let mut dedupe = Dedupe::new(&index);
     dedupe.min_age = Duration::ZERO;
-    let report = engine::run(&units, &[&dedupe, &compress], &Options::default(), &SWIFTPM).unwrap();
+    let report = engine::run(&units, &[&compress, &dedupe], &Options::default(), &SWIFTPM).unwrap();
 
     assert!(report.busy.is_empty(), "{report:?}");
     if dunnage::sys::caps(&build).compress {
-        assert!(report.passes[1].applied > 0, "{report:?}");
+        assert!(report.passes[0].applied > 0, "{report:?}");
         if dunnage::sys::ALLOCATED_SHOWS_COMPRESSION {
             assert!(allocated_bytes(&build) < before, "{before}");
         }

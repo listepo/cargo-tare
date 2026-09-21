@@ -240,6 +240,11 @@ compilation off. The two are complementary, and nothing in `dunnage` conflicts w
 
 ## Not measured
 
+- **.NET.** The expected win is `bin/` copies of NuGet assemblies, and the NuGet cache here is
+  empty; nothing was downloaded to fill it. The two-app fixture of `tests/dotnet.rs` is a few
+  hundred KiB: it proves the passes safe (the next `dotnet build` copies and compiles nothing),
+  not what they are worth.
+
 - **Seeded worktree** — `dunnage seed` does not exist yet (T8).
 - **Shared `build-dir`** — cargo's `build.build-dir` is nightly-only (`-Z build-dir`); this
   machine builds on stable, where the key is ignored. T12's `advise` reports exactly that.

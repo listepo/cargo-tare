@@ -15,6 +15,7 @@ too slow, see `DESIGN.md`).
 | hyperfine | global (brew; mise ships an x86_64 build that will not run on arm64) | `scripts/bench.sh`: build timings | https://github.com/sharkdp/hyperfine |
 | sccache | global (mise) | `scripts/bench.sh`: the variant the tool is compared against | https://github.com/mozilla/sccache |
 | swift | global (Xcode), optional | `tests/swiftpm.rs`: the lock and rebuild oracles for SwiftPM, skipped without it; `docs/bench.md` numbers | https://github.com/swiftlang/swift |
+| dotnet | global (installer), optional, a 9.0 SDK | `tests/dotnet.rs`: the MSBuild no-op oracle, skipped without it | https://github.com/dotnet/sdk |
 | go | global (brew), optional | `tests/store.rs`: the `GOCACHE` oracle for `--store`, skipped without it; `docs/bench.md` numbers | https://github.com/golang/go |
 | lima | global (brew / mise) | A Linux VM with a btrfs loopback image: the only way to test the Linux half from a Mac | https://github.com/lima-vm/lima |
 

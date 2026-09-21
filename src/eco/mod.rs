@@ -2,9 +2,10 @@
 //! that knows a platform lives under `sys`: the engine, the inode model, the index and the
 //! lossless passes ask through [`Ecosystem`] and never name a build system's files or dirs.
 //!
-//! Cargo and SwiftPM so far. The shape is `docs/architecture.md`, "The adapter".
+//! Cargo, SwiftPM and .NET so far. The shape is `docs/architecture.md`, "The adapter".
 
 pub mod cargo;
+pub mod dotnet;
 pub mod store;
 pub mod swiftpm;
 
@@ -137,7 +138,7 @@ impl Sharing {
 }
 
 /// Every adapter, in the order the shared walk asks them.
-pub static REGISTRY: [&dyn Ecosystem; 2] = [&cargo::CARGO, &swiftpm::SWIFTPM];
+pub static REGISTRY: [&dyn Ecosystem; 3] = [&cargo::CARGO, &swiftpm::SWIFTPM, &dotnet::DOTNET];
 
 /// The registered adapter called `name`.
 pub fn named(name: &str) -> Option<&'static dyn Ecosystem> {

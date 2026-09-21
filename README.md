@@ -172,6 +172,13 @@ and the mmapped compilation cache are left alone, and dedupe uses clones only. O
 swift-argument-parser built in debug and release, `.build` went from 357 MiB to 157 MiB and the
 next `swift build` compiled nothing (`docs/bench.md`). Xcode's DerivedData is not handled yet.
 
+.NET projects are found by `obj/project.assets.json`: their `obj/` and `bin/` go through the
+passes too. MSBuild takes no lock, so they get the tier for build systems without one: files
+younger than a day are left alone, a running `dotnet` in or around the project makes it busy,
+and lossy passes run only where that check could answer. Equal files are shared by clones only,
+never by hardlinks, even with `--link-artifacts`: MSBuild's `Copy` writes through a hardlink into
+every other path. `UseArtifactsOutput` (`artifacts/`) is not found yet.
+
 **advise** changes nothing: it reads the manifests and cargo configs of the projects it finds
 and names what makes their targets bigger than they need to be — full debuginfo where
 `line-tables-only` would do, dependency debuginfo nobody steps into, a missing `strip` in
