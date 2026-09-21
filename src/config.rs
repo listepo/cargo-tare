@@ -34,6 +34,8 @@ pub struct Config {
     pub evict: Evict,
     #[serde(default)]
     pub incremental: Incremental,
+    #[serde(default)]
+    pub index: Index,
     /// Per-family overrides, keyed by the family's dir: the git common dir of the repository and
     /// its worktrees, or the target dir itself when there is no repository.
     #[serde(default)]
@@ -53,6 +55,13 @@ pub struct Evict {
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Incremental {
+    pub idle_days: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct Index {
+    /// Drop hash-index entries no run has looked up for this many days.
     pub idle_days: Option<u64>,
 }
 
@@ -138,6 +147,8 @@ mod tests {
              max-total-gib = 50\n\
              [incremental]\n\
              idle-days = 7\n\
+             [index]\n\
+             idle-days = 90\n\
              [family.\"/a/repo\"]\n\
              skip = true\n",
         )
@@ -151,6 +162,7 @@ mod tests {
         assert_eq!(config.evict.idle_days, Some(30));
         assert_eq!(config.evict.max_total_gib, Some(50));
         assert_eq!(config.incremental.idle_days, Some(7));
+        assert_eq!(config.index.idle_days, Some(90));
         assert!(config.skips(Path::new("/a/repo")));
         assert!(!config.skips(Path::new("/a/other")));
     }

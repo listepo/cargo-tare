@@ -204,11 +204,16 @@ whole-target = true
 [incremental]
 idle-days = 7
 
+[index]
+idle-days = 30
+
 [family."/Users/me/code/monorepo/.git"]
 skip = true
 ```
 
 The family key is the git common dir that `status` prints for the family.
+`[index] idle-days` is how long the hash index keeps a file's hash that no run has looked up
+(default 30); forgetting one costs a single rehash.
 
 ## Troubleshooting
 

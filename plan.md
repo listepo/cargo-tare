@@ -23,13 +23,12 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | T38 | todo | P2 | 3 | 0% | |
 | T39 | todo | P3 | 2 | 0% | |
 | T40 | todo | P3 | 3 | 0% | |
-| T41 | todo | P3 | 2 | 0% | |
 | T35 | todo | P3 | 2 | 0% | |
 
 Blockers, take these first. **T24** blocks T21: nothing on Windows can be tested without it.
 **T28** blocks T29–T33, T35 and T37–T40: every
 adapter and every monorepo behavior sits on its boundary. **T29** blocks T31, T32, T33 and the
-Xcode half of T30, which have no build lock to take. **T33** blocks T35. T41 is free. T35 is the
+Xcode half of T30, which have no build lock to take. **T33** blocks T35. T35 is the
 lowest priority in the plan by the creator's word: take it only when nothing else is free.
 
 Decisions the plan is built on, all the creator's: the tool runs as a CLI **and** as a daemon
@@ -268,15 +267,6 @@ owner, marker stamp — re-validate entries by their markers, and walk only on a
 on `--rediscover`, or when a root's own mtime says something moved. Measure first: the task
 starts with a walk benchmark on a large checkout and closes with "not needed" if discovery is
 already a small share of a settled re-run. Needs T28.
-
-### T41. Expire the hash index
-
-`src/index.rs` says it itself: entries of deleted targets are never expired. For a CLI run now
-and then that is a slowly growing file; under a daemon that visits every unit after every build
-it grows for as long as the machine lives. A last-seen field per entry, entries not seen for a
-configurable time dropped on save, the file format version bumped with a silent rebuild from an
-old file. Free to start. Done: a test ages entries and sees them go; an old-format index is
-read as empty rather than as an error.
 
 ### T35. Go: `GOCACHE` and `GOMODCACHE`
 

@@ -11,5 +11,4 @@
 - T38. Monorepo: `orphans` for a project that is gone
 - T39. Monorepo: grouped `status` and `skip-paths`
 - T40. Known build dirs: a persisted inventory
-- T41. Expire the hash index
 - T35. Go: `GOCACHE` and `GOMODCACHE`

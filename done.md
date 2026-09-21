@@ -1095,3 +1095,33 @@ recipe, `DESIGN.md` seed section and synopsis, `README.md` synopsis.
 #### Verified
 
 `just check` and `just check-cross` green; the four tests in `tests/worktree.rs` pass.
+
+### T41. Expire the hash index
+
+`src/index.rs` says it itself: entries of deleted targets are never expired. For a CLI run now
+and then that is a slowly growing file; under a daemon that visits every unit after every build
+it grows for as long as the machine lives. A last-seen field per entry, entries not seen for a
+configurable time dropped on save, the file format version bumped with a silent rebuild from an
+old file. Free to start. Done: a test ages entries and sees them go; an old-format index is
+read as empty rather than as an error.
+
+#### Execution plan
+
+1. `src/index.rs`: a `seen` field per entry (seconds since the epoch), stamped by `get`, `put`
+   and `mark_shared` with the time the index was loaded; `load_at` for tests; `expire(idle)`
+   drops entries seen before `now - idle`. Magic `DUNIDX02`; an old file fails the magic check
+   and reads as empty.
+2. `Settings::index_idle` (default 30 days) and `Settings::from_config`; the session expires the
+   index before every save. Config `[index] idle-days`; `run`, `seed` and `worktree add` read it.
+3. Unit tests in `src/index.rs`: entries age and go; the old format reads as empty and is
+   rewritten.
+4. `DESIGN.md` index paragraph and config line; `docs/usage.md` and `README.md` config examples.
+
+#### Result
+
+As planned. The CLI's config loading moved into one `load_config` helper, so `seed` and
+`worktree add`, which also save the index, keep it as long as `run` does.
+
+#### Verified
+
+`just check` and `just check-cross` green.

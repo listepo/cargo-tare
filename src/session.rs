@@ -56,15 +56,41 @@ pub fn default_index() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("HOME")?).join(DEFAULT_INDEX))
 }
 
+/// How long an index entry no run has looked up is kept, unless the settings say otherwise.
+pub const DEFAULT_INDEX_IDLE: Duration = Duration::from_secs(30 * SECS_PER_DAY);
+const SECS_PER_DAY: u64 = 24 * 60 * 60;
+
 /// Where a session keeps its state. The default names no file, which is enough for `inventory`
 /// and `advise`: they keep no state. `plan`, `apply` and `seed` refuse it.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Settings {
     /// The content-hash cache; the run lock sits next to it.
     pub index: PathBuf,
+    /// Entries of the index no run has looked up for this long are dropped on save.
+    pub index_idle: Duration,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            index: PathBuf::new(),
+            index_idle: DEFAULT_INDEX_IDLE,
+        }
+    }
 }
 
 impl Settings {
+    /// `index`, with what the config file says about keeping it.
+    pub fn from_config(index: PathBuf, config: &Config) -> Self {
+        let idle = config.index.idle_days;
+        Self {
+            index,
+            index_idle: idle.map_or(DEFAULT_INDEX_IDLE, |days| {
+                Duration::from_secs(days.saturating_mul(SECS_PER_DAY))
+            }),
+        }
+    }
+
     pub fn run_lock(&self) -> PathBuf {
         self.index.with_file_name(RUN_LOCK)
     }
@@ -342,7 +368,7 @@ impl Session {
             format_args!("seeding {} from {}", checkout.display(), source.display()),
         ))?;
         if !dry_run {
-            self.save(&hashes)?;
+            self.save(&mut hashes)?;
         }
         Ok(Seeding {
             target: checkout.join(seed::TARGET),
@@ -572,7 +598,7 @@ impl Session {
         report.compress_notes = compress.notes();
         report.files_hashed = dedupe.hashed();
         // The index only caches hashes of files as they are, so it is worth keeping on a dry run too.
-        self.save(&index.borrow())?;
+        self.save(&mut index.borrow_mut())?;
         Ok(report)
     }
 
@@ -600,8 +626,9 @@ impl Session {
         }
     }
 
-    fn save(&self, hashes: &HashIndex) -> Result<()> {
+    fn save(&self, hashes: &mut HashIndex) -> Result<()> {
         let path = &self.settings.index;
+        hashes.expire(self.settings.index_idle);
         hashes
             .save(path)
             .map_err(Error::at(format_args!("saving {}", path.display())))

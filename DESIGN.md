@@ -292,11 +292,16 @@ forward with it, which is the safe direction.
 On a filesystem that clones, none of this happens and `--link-artifacts` changes nothing: a
 clone is better and needs no permission.
 
-The **index** maps `(device, inode)` to `(size, mtime, hash, shared)`; a lookup with a different
+The **index** maps `(device, inode)` to `(size, mtime, hash, shared, seen)`; a lookup with a different
 size or mtime misses, so a rewritten file is rehashed and loses its shared mark. It is one flat
 file of fixed little-endian records behind a magic string (`~/.cache/dunnage/hashes-v1.bin`,
 `--index` to override), written through a temp file and `rename`, saved on `--dry-run` too. It is
-only a cache: a missing, truncated or foreign file reads as empty.
+only a cache: a missing, truncated or foreign file reads as empty, and so does one of an older
+format (the magic's digit), which the next save replaces. `seen` is when a run last hit the
+entry; on save, entries idle longer than `[index] idle-days` (default 30) are dropped. Those are
+the inodes of targets that were deleted or rebuilt, or of files no pass needs to hash any more,
+so the file does not grow for as long as the machine lives; dropping one still wanted costs one
+rehash of that file.
 
 Why the `shared` mark exists: APFS cannot be asked whether two files share blocks, and a clone is
 a different inode with equal content — without the mark every run would clone everything again
@@ -602,7 +607,7 @@ dunnage advise [--json] [ROOT]...  # what makes these targets bigger than they n
 
 Config (`src/config.rs`): `$XDG_CONFIG_HOME/dunnage/config.toml`, else
 `~/.config/dunnage/config.toml` — `roots`, `lossy`, `min-age`, `min-size`,
-`[evict] idle-days / max-total-gib / whole-target`, `[incremental] idle-days`, `[family."<dir>"] skip`. Keys are
+`[evict] idle-days / max-total-gib / whole-target`, `[incremental] idle-days`, `[index] idle-days`, `[family."<dir>"] skip`. Keys are
 kebab-case and unknown ones are an error: a typo that silently does nothing is worse than a stop.
 A flag always wins over the file, and a file named with `--config` must exist. Only `skip` is per
 family, because the other thresholds are decided over everything under the roots at once.

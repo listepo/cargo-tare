@@ -17,6 +17,7 @@ use common::{Fixture, fake_target};
 fn session(state: &Path) -> Session {
     Session::open(Settings {
         index: state.join("hashes.bin"),
+        ..Settings::default()
     })
 }
 
@@ -118,6 +119,7 @@ fn the_cli_exits_2_when_another_run_holds_the_lock() {
     let index = state.path().join("hashes.bin");
     let held = Settings {
         index: index.clone(),
+        ..Settings::default()
     }
     .run_lock();
     let lock = std::fs::File::create(&held).unwrap();

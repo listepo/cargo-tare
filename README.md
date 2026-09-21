@@ -186,6 +186,9 @@ whole-target = true         # take the target dir itself once all of its profile
 [incremental]
 idle-days = 7
 
+[index]
+idle-days = 30              # forget hashes no run has looked up for this long; the default
+
 [family."/Users/me/code/monorepo/.git"]
 skip = true                 # never touch this repository and its worktrees
 ```

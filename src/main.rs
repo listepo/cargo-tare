@@ -245,12 +245,28 @@ fn roots_or_config(roots: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
     })
 }
 
-fn open(index: Option<PathBuf>) -> Result<Session> {
+/// A session on `index`, or on the default one, kept as `config` says.
+fn open(index: Option<PathBuf>, config: &Config) -> Result<Session> {
     let index = match index {
         Some(path) => path,
         None => session::default_index().context("HOME is not set; pass --index")?,
     };
-    Ok(Session::open(Settings { index }))
+    Ok(Session::open(Settings::from_config(index, config)))
+}
+
+/// The file `--config` names, which must be there, else the default one if there is one.
+fn load_config(path: Option<&Path>) -> Result<Config> {
+    Ok(match path {
+        // A file the command line names and that is not there is a mistake, not a default.
+        Some(path) => {
+            ensure!(path.exists(), "no config file at {}", path.display());
+            Config::load(path)?
+        }
+        None => match config::default_path() {
+            Some(path) => Config::load(&path)?,
+            None => Config::default(),
+        },
+    })
 }
 
 fn gib(bytes: u64) -> String {
@@ -388,7 +404,7 @@ fn seed_into(
     dir: Option<PathBuf>,
 ) -> Result<Done> {
     let checkout = dir.unwrap_or_else(|| PathBuf::from("."));
-    let session = open(index)?;
+    let session = open(index, &load_config(None)?)?;
     let done = session.seed(&checkout, from.as_deref(), dry_run)?;
     print_seeding(&done, dry_run);
     Ok(Done::busy_if(!done.seeded.busy.is_empty()))
@@ -400,7 +416,7 @@ fn worktree_add(
     index: Option<PathBuf>,
     git_args: &[std::ffi::OsString],
 ) -> Result<Done> {
-    let session = open(index)?;
+    let session = open(index, &load_config(None)?)?;
     let added = session.worktree_add(Path::new("."), git_args, dry_run)?;
     println!("added worktree {}", added.worktree.display());
     let seeding = added.seeding.with_context(|| {
@@ -467,22 +483,12 @@ fn request(args: RunArgs, config: &Config) -> Request {
 }
 
 fn run(args: RunArgs) -> Result<Done> {
-    let config = match &args.config {
-        // A file the command line names and that is not there is a mistake, not a default.
-        Some(path) => {
-            ensure!(path.exists(), "no config file at {}", path.display());
-            Config::load(path)?
-        }
-        None => match config::default_path() {
-            Some(path) => Config::load(&path)?,
-            None => Config::default(),
-        },
-    };
+    let config = load_config(args.config.as_deref())?;
     let (dry_run, json, index) = (args.dry_run, args.json, args.index.clone());
     let request = request(args, &config);
     // Before anything else can fail, so a mistyped flag is named even without a `$HOME`.
     request.check()?;
-    let session = open(index)?;
+    let session = open(index, &config)?;
     let table = Table {
         link_warning: Cell::new(request.link_artifacts),
         dry_run,
