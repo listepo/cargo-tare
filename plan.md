@@ -14,15 +14,13 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | T21 | todo | P2 | 5 | 0% | |
 | T30.1 | todo | P2 | 3 | 0% | |
 | T32.1 | todo | P2 | 2 | 0% | |
-| T34 | todo | P2 | 4 | 0% | |
 | T38.1 | todo | P2 | 3 | 0% | |
 | T39 | todo | P3 | 2 | 0% | |
 | T40 | todo | P3 | 3 | 0% | |
 | T35 | todo | P3 | 2 | 0% | |
 
 Blockers, take these first. **T24** blocks T21: nothing on Windows can be tested without it.
-T35 is the
-lowest priority in the plan by the creator's word: take it only when nothing else is free.
+T35 is the lowest priority in the plan by the creator's word: take it only when nothing else is free.
 
 Decisions the plan is built on, all the creator's: the tool runs as a CLI **and** as a daemon
 with as much shared code as possible, and must stay embeddable as a library in a build system —
@@ -125,25 +123,6 @@ without writing into the real `~/Library` (`xcodebuild -derivedDataPath` in a te
 candidate; whether it writes `info.plist` there is the first thing to check). Oracle: a second
 `xcodebuild` compiles nothing.
 
-### Execution plan
-
-Spike: SDK 10.0.401 on this machine fails every build (workload manifests missing; the fix,
-`dotnet workload repair`, changes the system install and is not ours to run). SDK 9.0.306,
-pinned by a `global.json` in the temp dir, builds offline with `NUGET_PACKAGES` in the temp dir.
-The NuGet cache is empty and nothing is downloaded: two apps with a `ProjectReference` to one
-library stand in for NuGet copies — each `bin/` holds its own copy of `Lib.dll`, the same case.
-
-1. `src/eco/dotnet.rs`: claim `obj/` holding `project.assets.json`, and `bin/` next to such an
-   `obj/`; each is one unit; owner the project dir; manifest the project file named by
-   `obj/<name>.nuget.dgspec.json`; `Guard::Quiet` with `dotnet`, `MSBuild`, `VBCSCompiler` as
-   tools; `Sharing::ClonesOnly`, so `--link-artifacts` can never link here; no `seed`.
-   `UseArtifactsOutput` (`artifacts/`) has no owner next to it: left for later, said in docs.
-2. Tests (`tests/dotnet.rs`): fixtures for claim, units, manifest and guard; with `dotnet` 9
-   present, the oracle: sources and outputs aged together, dedupe + compress, then
-   `dotnet build -v:n` skips `CoreCompile` and copies nothing, and the app runs. A negative
-   control: a new mtime on a source makes it compile.
-3. Measure on the two-app fixture; docs (README, usage, DESIGN, bench), `toolchain.md`.
-
 ### T32.1. C and C++: Ninja and Meson
 
 Split off from T32, which handles CMake build dirs and was verified with the Makefiles
@@ -151,29 +130,6 @@ generator only, because `ninja` and `meson` are not installed here. Settle wheth
 Ninja takes a lock on the build dir, claim Meson build dirs (`meson-private/`, whose
 `coredata.dat` records the source dir), and add the oracle `ninja -n` plans nothing after a
 pass. Needs the creator's approval to install `ninja` and `meson` (brew or mise).
-
-### T34. Daemon mode: `dunnage daemon`
-
-Decided by the creator: the tool runs as a CLI and as a daemon, sharing as much code as can be
-shared. Design in `docs/architecture.md`, "Process model". The daemon is the same binary in the
-foreground, kept alive by the service manager; it never forks itself. Everything it *does* is a
-`Session` call (T36) with the `Request` a CLI run would build from the same config. What is its
-own: triggers (a slow timer that re-runs discovery, a fast one over known units, and a
-filesystem watcher on the top level of known units as one more trigger), per-unit due times
-(`last write + min-age`, so a unit is visited once per build, when it has gone cold), and a
-state file that `daemon status` reads. There is no IPC: CLI and daemon coordinate through the
-run lock and files.
-
-`dunnage daemon install | remove | status` writes and removes the launchd agent or systemd
-user unit — low CPU and I/O priority set there, not in code — and replaces the hand-written
-plist in `README.md`. A Windows service waits for T21.
-
-Hard requirements: a build never waits for the daemon (`lock_budget` set low by default; the
-test starts a build during a daemon pass and bounds how long it blocks); lossy passes run only
-when the config enables them; the daemon adds no code path that mutates a build dir. The
-watcher crate (`notify` is the candidate) is a new dependency and the creator's call at claim
-time; the timers alone are a complete first version. Logging is the observer's events on
-stderr, which launchd and journald already collect — no logging crate.
 
 ### T38.1. Monorepo: an owner for a build dir outside its checkout
 

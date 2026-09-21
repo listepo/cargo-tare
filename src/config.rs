@@ -41,6 +41,8 @@ pub struct Config {
     pub index: Index,
     #[serde(default)]
     pub orphans: OrphansConfig,
+    #[serde(default)]
+    pub daemon: Daemon,
     /// Per-family overrides, keyed by the family's dir: the git common dir of the repository and
     /// its worktrees, or the target dir itself when there is no repository.
     #[serde(default)]
@@ -76,6 +78,18 @@ pub struct OrphansConfig {
 pub struct Index {
     /// Drop hash-index entries no run has looked up for this many days.
     pub idle_days: Option<u64>,
+}
+
+/// `[daemon]`: how often `dunnage daemon run` looks, and how long it may keep a build waiting.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct Daemon {
+    /// The longest sleep between two looks at the known build dirs.
+    pub interval_secs: Option<u64>,
+    /// How often the roots are walked again for new build dirs.
+    pub rediscover_secs: Option<u64>,
+    /// How long a group may hold a build's locks before it lets go.
+    pub lock_budget_secs: Option<u64>,
 }
 
 /// Only what is decided per family. The `evict` cap and the idle rules are global, because the

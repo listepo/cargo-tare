@@ -164,6 +164,33 @@ seed. `--dry-run` still adds the worktree and only reports what seeding would co
 dependencies whose sources stay where they are — registry crates, a vendor dir outside the
 repository — build warm; the workspace itself moved and is compiled again.
 
+### `dunnage daemon run [--config FILE] [--index FILE] [--once]`
+
+The passes of `run`, with no flags: the config file decides the roots and the lossy passes, and
+names at least one root. The daemon walks the roots for build dirs (again every
+`rediscover-secs`), and each time it looks, reads when every unit was last built. A unit built
+since its last visit and older than `min-age` (a day for build systems without a lock) is due;
+any due unit starts one run of the config's request, holding a build's locks for at most
+`lock-budget-secs` per group. What a build kept busy stays due for the next look. Between looks
+it sleeps until the next unit is due, at most `interval-secs`.
+
+It stays in the foreground and logs to stderr; the service manager keeps it alive. `--once`
+looks once, runs if anything is due, and exits. A manual `run` meanwhile is refused with the run
+lock, and so is the daemon's look while a manual run goes on: it tries again at the next look.
+The daemon handles no signal: killed mid-run it leaves at most `.dunnage-tmp-*` files, which the
+next run removes.
+
+State: `daemon.json` next to the hash index — the units, their last build, due and visited
+times, the last run's per-pass counts and busy units. A restarted daemon starts from it.
+
+### `dunnage daemon install [--config FILE] [--index FILE] [--print]`, `remove`, `status`
+
+`install` writes a launchd agent (`~/Library/LaunchAgents/dev.dunnage.daemon.plist`, logging
+to `~/Library/Logs/dunnage.log`) or a systemd user unit (`dunnage.service`), both at low CPU
+and I/O priority, and starts it; `--config` and `--index` are passed on to `daemon run`.
+`--print` only shows the unit. `remove` stops the daemon and deletes the unit. `status [--index
+FILE] [--json]` says whether the unit is installed and prints the state file.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -214,8 +241,8 @@ A script that must tell "nothing to do" from "a build was in the way":
 dunnage run ~/code || test $? -eq 2
 ```
 
-Scheduling with `launchd` or a `just` recipe is shown in `README.md`, "Running it
-automatically".
+`dunnage daemon install` does the scheduling; a `just` recipe is shown in `README.md`, "Running
+it automatically".
 
 ## Configuration
 
@@ -246,6 +273,11 @@ skip = true
 
 [orphans]
 project-idle-days = 7  # as --orphans-project-idle-days
+
+[daemon]
+interval-secs = 600      # the longest sleep between two looks
+rediscover-secs = 21600  # how often the roots are walked for new build dirs
+lock-budget-secs = 2     # how long a group may hold a build's locks
 ```
 
 The family key is the git common dir that `status` prints for the family.

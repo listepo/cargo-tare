@@ -11,6 +11,8 @@ use dunnage::engine;
 use dunnage::inventory::{Inventory, Target};
 use dunnage::session::{self, Control, Observer, Request, RunReport, Session, Settings};
 
+mod daemon;
+
 const BYTES_PER_GIB: f64 = (1u64 << 30) as f64;
 /// Exit code when a profile dir was skipped because a build holds its lock, or another run of
 /// the tool holds the run lock.
@@ -67,6 +69,9 @@ enum Cmd {
     /// Git worktrees that start warm
     #[command(subcommand)]
     Worktree(WorktreeCmd),
+    /// Run the passes as build dirs go cold, as a service; `daemon install` sets that up
+    #[command(subcommand)]
+    Daemon(DaemonCmd),
     /// Clone a sibling checkout's target into a fresh one, so its first build starts warm
     Seed {
         /// Where to copy from: a checkout or a target dir [default: the family's newest target]
@@ -102,6 +107,49 @@ enum WorktreeCmd {
             allow_hyphen_values = true
         )]
         git_args: Vec<std::ffi::OsString>,
+    },
+}
+
+#[derive(Subcommand)]
+enum DaemonCmd {
+    /// Stay in the foreground and run the config's passes over its `roots` whenever a build dir
+    /// built since the last look has gone cold. Lossy passes run only if the config enables them
+    Run {
+        /// Configuration file [default: $XDG_CONFIG_HOME/dunnage/config.toml]
+        #[arg(long, value_name = "FILE")]
+        config: Option<PathBuf>,
+        /// Content-hash cache; the state file sits next to it
+        /// [default: ~/.cache/dunnage/hashes-v1.bin]
+        #[arg(long, value_name = "FILE")]
+        index: Option<PathBuf>,
+        /// Look once, run if anything is due, write the state file and exit
+        #[arg(long)]
+        once: bool,
+    },
+    /// Write a launchd agent (macOS) or a systemd user unit (Linux) that keeps `daemon run`
+    /// going at low priority, and start it
+    Install {
+        /// Passed on to `daemon run`
+        #[arg(long, value_name = "FILE")]
+        config: Option<PathBuf>,
+        /// Passed on to `daemon run`
+        #[arg(long, value_name = "FILE")]
+        index: Option<PathBuf>,
+        /// Print the unit and where it would go; write and start nothing
+        #[arg(long)]
+        print: bool,
+    },
+    /// Stop the daemon and remove its unit
+    Remove,
+    /// Whether the unit is installed, the last run, and which build dirs are due when
+    Status {
+        /// Content-hash cache the daemon was started with
+        /// [default: ~/.cache/dunnage/hashes-v1.bin]
+        #[arg(long, value_name = "FILE")]
+        index: Option<PathBuf>,
+        /// Print the state file as it is
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -184,6 +232,21 @@ fn main() -> ExitCode {
         } => status(json, cargo_home, roots).map(|()| Done::Everything),
         Cmd::Advise { json, roots } => advise(json, roots).map(|()| Done::Everything),
         Cmd::Run(args) => run(args),
+        Cmd::Daemon(cmd) => match cmd {
+            DaemonCmd::Run {
+                config,
+                index,
+                once,
+            } => daemon::run(config.as_deref(), index, once),
+            DaemonCmd::Install {
+                config,
+                index,
+                print,
+            } => daemon::service::install(config.as_deref(), index.as_deref(), print),
+            DaemonCmd::Remove => daemon::service::remove(),
+            DaemonCmd::Status { index, json } => daemon::status(index, json),
+        }
+        .map(|()| Done::Everything),
         Cmd::Seed {
             from,
             dry_run,
@@ -256,11 +319,18 @@ fn roots_or_config(roots: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
 
 /// A session on `index`, or on the default one, kept as `config` says.
 fn open(index: Option<PathBuf>, config: &Config) -> Result<Session> {
-    let index = match index {
-        Some(path) => path,
-        None => session::default_index().context("HOME is not set; pass --index")?,
-    };
-    Ok(Session::open(Settings::from_config(index, config)))
+    Ok(Session::open(Settings::from_config(
+        index_path(index)?,
+        config,
+    )))
+}
+
+/// `--index`, else the default one.
+fn index_path(index: Option<PathBuf>) -> Result<PathBuf> {
+    match index {
+        Some(path) => Ok(path),
+        None => session::default_index().context("HOME is not set; pass --index"),
+    }
 }
 
 /// The file `--config` names, which must be there, else the default one if there is one.

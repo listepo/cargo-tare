@@ -281,7 +281,7 @@ is old or new, never half of either.
 
 ## Session (`src/session.rs`)
 
-The run above one engine call, shared by every front end: the CLI today, the daemon (T34), an
+The run above one engine call, shared by every front end: the CLI and the daemon (`DESIGN.md`, "Daemon"), an
 embedding build system later (R8). `main.rs` only parses flags, merges them over the config into
 a `Request`, prints what the session returns and picks the exit code.
 
@@ -762,7 +762,34 @@ The oracle is `cmake --build` with the Makefiles generator: after compress and d
 no `Building` and no `Linking` line, and the binaries still run; a new mtime on a source makes it
 build again. Ninja and Meson build dirs are T32.1.
 
-## CLI surface
+## Daemon (`src/daemon/`)
+
+In the binary, not the library: only a process has triggers. Every change it makes is one
+`Session::apply` of `Request::from_config`, so it runs exactly what a scheduled `run` with no
+flags would, lossy passes included only when the config names them.
+
+- **Triggers: timers only.** A slow one re-runs `eco::discover`; each look reads every known
+  unit's `last_used`. A filesystem watcher (`notify`) waits for the creator's word on the
+  dependency.
+- **Due times.** A unit is pending when built since its last visit, and due at its last build
+  plus `min-age` — `QUIET_MIN_AGE` at least for `Guard::Quiet` units. Any due unit starts one run
+  over all the roots: dedupe and the caps need the families whole. After it, a unit is visited
+  unless it was busy or a group let go early; the report does not say which units an
+  interrupted group reached. The daemon sleeps until the next due time still ahead, capped by
+  the interval, so a busy unit waits for the interval rather than spinning.
+- **A build never waits long.** `Control::lock_budget` is 2 s by default: a group lets go of
+  build locks after that, and is visited once more. A held lock is `try_lock`, so the daemon never
+  waits for a build either.
+- **State.** `daemon.json` next to the index, written to a temp file and renamed. It keeps the
+  visit of each unit across restarts; `daemon status` prints it.
+- **Service units.** `daemon install` writes a launchd agent (`Nice`, `LowPriorityIO`,
+  `ProcessType Background`, `ThrottleInterval`) or a systemd user unit (`Nice=19`, idle CPU and
+  I/O scheduling, `Restart=on-failure`), with this binary's absolute path, and starts it through
+  `launchctl bootstrap` / `systemctl --user enable --now`. No test writes one: it would load a
+  real agent. `--print` is what the tests check.
+- **No signal handling.** It needs a crate or `unsafe`; every action is whole, so a killed run
+  leaves at most temp files the next run removes.
+
 
 ```
 dunnage status [--json] [--cargo-home [DIR]] [ROOT]...  # inventory, families, potential
@@ -778,11 +805,14 @@ dunnage run [--dry-run] [--lossy <PASS>]... [--index <FILE>] [<ROOT>]...
 dunnage seed [--from <DIR>] [--dry-run] [--index <FILE>] [<DIR>]  # clone a sibling's target
 dunnage worktree add [--dry-run] [--index <FILE>] <GIT ARGS>... # git worktree add, then seed
 dunnage advise [--json] [ROOT]...  # what makes these targets bigger than they need to be
+dunnage daemon run [--config <FILE>] [--index <FILE>] [--once]  # the passes, as dirs go cold
+dunnage daemon install [--config <FILE>] [--index <FILE>] [--print] | remove | status [--json]
 ```
 
 Config (`src/config.rs`): `$XDG_CONFIG_HOME/dunnage/config.toml`, else
 `~/.config/dunnage/config.toml` — `roots`, `lossy`, `min-age`, `min-size`,
-`[evict] idle-days / max-total-gib / whole-target`, `[incremental] idle-days`, `[index] idle-days`, `[family."<dir>"] skip`. Keys are
+`[evict] idle-days / max-total-gib / whole-target`, `[incremental] idle-days`, `[index] idle-days`, `[orphans] project-idle-days`,
+`[daemon] interval-secs / rediscover-secs / lock-budget-secs`, `[family."<dir>"] skip`. Keys are
 kebab-case and unknown ones are an error: a typo that silently does nothing is worse than a stop.
 A flag always wins over the file, and a file named with `--config` must exist. Only `skip` is per
 family, because the other thresholds are decided over everything under the roots at once.

@@ -39,3 +39,16 @@ backend does is WOF (`compact /EXE:LZX`, `FSCTL_SET_EXTERNAL_BACKING`): a much b
 and a file that is rewritten simply becomes a plain file again, exactly like decmpfs. It is a
 different API with its own edge cases, so it is a choice to measure in T21's spike, not to
 assume. T21's card names `FSCTL_SET_COMPRESSION`; changing that is the creator's call.
+
+## Daemon: a filesystem watcher
+
+T34's daemon looks on timers only. A watcher on the top level of known units (`notify`) would
+see a build start and end without waiting for the interval. A new dependency: the creator's
+call, as the T34 card says.
+
+## Daemon: stop cleanly on SIGTERM
+
+`launchctl bootout` and `systemctl stop` send SIGTERM, which kills the daemon mid-action; every
+action is whole, so the cost is leftover `.dunnage-tmp-*` files the next run removes. Raising
+`Control::stop` from the signal needs `signal-hook` or `ctrlc` (a new dependency) or `unsafe`
+FFI.

@@ -330,6 +330,10 @@ Done in T37: `seed::positions` seeds every position of a checkout root, each fro
 that built it last, with the adapter the shared walk found; `seed <dir>` with one dir still
 assumes cargo.
 
+Done in T34: `src/daemon/` with timers only, per-unit due times, `daemon.json`, and
+`daemon install | remove | status` for launchd and systemd (`DESIGN.md`, "Daemon"). The watcher
+waits for the `notify` decision.
+
 The daemon's loop lives in the binary's half because only a process has triggers; everything
 it *does* is a `Session` call. How the tool is invoked without cargo is settled with the first
 non-cargo adapter; since T42 the binary is `dunnage`, with `cargo dunnage` as an optional link,

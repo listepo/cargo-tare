@@ -240,3 +240,98 @@ Ninja oracle are split off as T32.1.
     makes it build.
 - On fmt after `dunnage run`: `cmake --build` builds nothing and 23 of 23 `ctest` tests pass.
 - `~/.cache/dunnage` is absent; no build lock files are left in `$TMPDIR`.
+
+### T34. Daemon mode: `dunnage daemon`
+
+Decided by the creator: the tool runs as a CLI and as a daemon, sharing as much code as can be
+shared. Design in `docs/architecture.md`, "Process model". The daemon is the same binary in the
+foreground, kept alive by the service manager; it never forks itself. Everything it *does* is a
+`Session` call (T36) with the `Request` a CLI run would build from the same config. What is its
+own: triggers (a slow timer that re-runs discovery, a fast one over known units, and a
+filesystem watcher on the top level of known units as one more trigger), per-unit due times
+(`last write + min-age`, so a unit is visited once per build, when it has gone cold), and a
+state file that `daemon status` reads. There is no IPC: CLI and daemon coordinate through the
+run lock and files.
+
+`dunnage daemon install | remove | status` writes and removes the launchd agent or systemd
+user unit — low CPU and I/O priority set there, not in code — and replaces the hand-written
+plist in `README.md`. A Windows service waits for T21.
+
+Hard requirements: a build never waits for the daemon (`lock_budget` set low by default; the
+test starts a build during a daemon pass and bounds how long it blocks); lossy passes run only
+when the config enables them; the daemon adds no code path that mutates a build dir. The
+watcher crate (`notify` is the candidate) is a new dependency and the creator's call at claim
+time; the timers alone are a complete first version. Logging is the observer's events on
+stderr, which launchd and journald already collect — no logging crate.
+
+#### Execution plan
+
+Timers only: `notify` is a new dependency, so the watcher waits for the creator's word; the
+card allows a first version without it. No signal handling either (it needs a crate or
+`unsafe`): a killed run leaves at most `.dunnage-tmp-*` files, which the next run removes.
+
+1. `src/daemon/` in the binary (`cli` feature), every action a `Session` call:
+   - `dunnage daemon run [--config] [--index] [--once]`: a foreground loop. The slow timer
+     re-runs `eco::discover` over the config's roots; each tick reads every known unit's
+     `last_used` and schedules it at `last build + min-age` (the quiet floor for `Quiet` units).
+     A unit built since its last visit and past its due time makes one `Session::apply` of the
+     config's `Request`, with a low `lock_budget`; busy or interrupted units stay pending. The
+     loop sleeps until the next due time, capped by the tick interval.
+   - A state file, `daemon.json` next to the index, written atomically: units with last build,
+     due and visited times, the last run's per-pass summary and busy units. It survives restarts.
+   - `[daemon]` in the config: `interval-secs`, `rediscover-secs`, `lock-budget-secs`.
+   - Observer events go to stderr as one line per pass.
+2. `dunnage daemon install [--print] | remove | status [--json]`: a launchd agent (`Nice`,
+   `LowPriorityIO`, `ProcessType Background`) or a systemd user unit (`Nice`, idle CPU and I/O
+   scheduling), loaded with `launchctl` / `systemctl --user`. Windows says it waits for T21.
+3. Tests:
+   - unit tests for due times and the unit files;
+   - `tests/daemon.rs` through the binary on fixture targets, with a temp `HOME`:
+     - `--once` applies and records the visit, and a second `--once` finds nothing due;
+     - a new build makes the unit due again;
+     - a held `.cargo-lock` leaves the unit pending, and the tick returns without waiting;
+     - no lossy pass runs unless the config enables it;
+     - `install --print` names the binary and `daemon run`.
+   `install` without `--print` is never run by a test: it would load a real agent.
+4. Docs: README (replace the hand-written plist), usage, DESIGN, architecture.
+
+#### Result
+
+- `src/daemon/mod.rs` (binary, `cli` feature): `dunnage daemon run [--config] [--index]
+  [--once]`. Timers only: rediscovery every `rediscover-secs` (6 h), a look at every known unit
+  at most every `interval-secs` (10 min), sooner when a unit's due time comes. A unit is due at
+  its last build plus `min-age` (the quiet floor for `Guard::Quiet`); any due unit starts one
+  `Session::apply` of `Request::from_config` with `lock_budget` 2 s (`lock-budget-secs`). Busy
+  units, and every unit of a run that let a group go early, stay pending. The daemon refuses a
+  config without `roots`.
+- `daemon.json` next to the index, written by rename: units with last build, due and visited
+  times, the last run's per-pass counts, busy units and last error. Visits survive restarts.
+- `src/daemon/service.rs`: `daemon install [--print] | remove | status [--json]`. A launchd
+  agent (`Nice` 10, `LowPriorityIO`, `ProcessType Background`, `ThrottleInterval` 300, log in
+  `~/Library/Logs/dunnage.log`) or a systemd user unit (`Nice=19`, idle CPU and I/O scheduling,
+  `Restart=on-failure`), loaded with `launchctl bootstrap` / `systemctl --user enable --now`.
+  Other platforms get an error naming `daemon run`.
+- `[daemon]` in the config. Observer events go to stderr, one line per pass.
+- Docs: README (the hand-written plist replaced), usage, DESIGN ("Daemon"), architecture.
+- Not done, in `ideas.md`: the `notify` watcher and SIGTERM handling, both new dependencies.
+  The `status` command does not print the daemon's state; `daemon status` does.
+
+#### Verified
+
+- `just check` (192 tests) and `just check-cross` pass.
+- Unit tests: due and pending logic, the next wake time, no visit after a group let go early, a
+  busy unit stays pending, the plist and systemd escaping.
+- `tests/daemon.rs`, through the binary with a temp `HOME`:
+  - the first `--once` visits both cold targets and dedupe shares the equal artifact; a second
+    finds nothing due; a build just now is pending and due at build + 3600; the same build
+    gone cold is visited once more, alone;
+  - a held `.cargo-lock` is not waited for: that unit stays pending and in `busy`, the other is
+    visited, and the next look takes it;
+  - only lossless passes run under a config that enables no lossy one;
+  - a config without roots is refused; `daemon status` before and after a run;
+  - `install --print` names this binary and the config, and writes nothing under `HOME`.
+- A build waiting on a group is bounded by `lock_budget`, as `tests/session.rs` checks; the
+  daemon sets it. `daemon install` without `--print` was not run: it would load an agent on
+  this machine.
+- `~/.cache/dunnage` and `~/Library/LaunchAgents/dev.dunnage.daemon.plist` are absent; no build
+  lock files are left in `$TMPDIR`.

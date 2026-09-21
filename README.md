@@ -295,19 +295,17 @@ dunnage:
     dunnage run ~/code || test $? -eq 2
 ```
 
-Or on macOS, every night, with launchd (`~/Library/LaunchAgents/dev.dunnage.plist`):
+Or as a service that looks when a build dir has gone cold rather than at a fixed hour:
 
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0"><dict>
-  <key>Label</key><string>dev.dunnage</string>
-  <key>ProgramArguments</key>
-  <array><string>/usr/bin/env</string><string>dunnage</string>
-         <string>run</string><string>/Users/me/code</string></array>
-  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer></dict>
-  <key>Nice</key><integer>10</integer>
-</dict></plist>
+```
+dunnage daemon install
 ```
 
-Put the roots and the lossy passes in the config file rather than in the plist, so the same
-schedule follows what you change there. Load it with `launchctl load -w <path>`.
+That writes a launchd agent (`~/Library/LaunchAgents/dev.dunnage.daemon.plist`) or a systemd
+user unit (`~/.config/systemd/user/dunnage.service`) running `dunnage daemon run` at low CPU and
+I/O priority, and starts it. The daemon runs the passes the config file names over its `roots`,
+once per build: a build dir is visited when its last build is older than `min-age`, and not
+again until it is built once more. It never keeps a build waiting for longer than its lock
+budget (2 s), lossy passes run only if the config enables them, and `dunnage daemon status`
+says what it did last and what is due when. `--print` shows the unit without installing it;
+`dunnage daemon remove` stops and removes it. Windows has no service yet.
