@@ -89,7 +89,9 @@ they exist for measurements, and the defaults are what `docs/bench.md` justifies
 **orphans** deletes, so it is off unless you name it: `--lossy orphans` removes the whole
 `target/` of a checkout that is a git worktree the repository no longer registers (its `.git`
 file points at a missing worktree record). Nothing outside `target/` is touched — such a
-checkout can hold work git can no longer report. No threshold, and every removal is printed
+checkout can hold work git can no longer report. A target moved out of its checkout
+(`CARGO_TARGET_DIR`) goes when that checkout is gone altogether: its owner is read from the
+dep-info cargo leaves in it. No threshold, and every removal is printed
 with its reason on a dry run too. A target whose `Cargo.toml` is gone from a checkout that is
 still there — a deleted crate, or one only another branch has — goes too, but only with
 `--orphans-project-idle-days N` and only once it has not been built for N days: a branch switch

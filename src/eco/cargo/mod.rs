@@ -3,11 +3,13 @@
 //! cargo has.
 
 pub mod advise;
+pub mod depinfo;
 pub mod doc;
 pub mod home;
 pub mod incremental;
 pub mod toolchains;
 
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
@@ -43,10 +45,37 @@ impl Ecosystem for Cargo {
         is_target(dir)
     }
 
-    /// The dir above the target: the workspace root when the target sits where cargo puts it
-    /// by default. A target moved elsewhere names the dir it was moved into, as before.
+    /// The dir above the target when it holds a `Cargo.toml`: where cargo puts a target by
+    /// default. Otherwise the workspace the dep-info names ([`depinfo`]): of several, one that
+    /// still exists, so a dir shared by checkouts is an orphan only once all of them are gone,
+    /// and none at all when they are in different repositories. No dep-info names one: the dir
+    /// above, which for a target left behind by a gone project is its project.
     fn owner(&self, build_dir: &Path) -> Option<Owner> {
-        let project = build_dir.parent()?.to_path_buf();
+        let above = build_dir.parent()?;
+        if self
+            .manifest(above)
+            .is_some_and(|manifest| manifest.exists())
+        {
+            return Some(Owner {
+                project: above.to_path_buf(),
+            });
+        }
+        let units = profile_dirs(build_dir).unwrap_or_default();
+        let roots = depinfo::workspace_roots(build_dir, &units);
+        let families: BTreeSet<Option<PathBuf>> = roots
+            .iter()
+            .filter(|root| root.exists())
+            .map(|root| crate::inventory::family(root))
+            .collect();
+        if families.len() > 1 {
+            return None;
+        }
+        let project = roots
+            .iter()
+            .find(|root| root.exists())
+            .or(roots.first())
+            .cloned()
+            .unwrap_or_else(|| above.to_path_buf());
         Some(Owner { project })
     }
 

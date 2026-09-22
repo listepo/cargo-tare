@@ -14,7 +14,6 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | T21 | todo | P2 | 5 | 0% | |
 | T30.1 | todo | P2 | 3 | 0% | |
 | T32.1 | todo | P2 | 2 | 0% | |
-| T38.1 | todo | P2 | 3 | 0% | |
 
 Blockers, take these first. **T24** blocks T21: nothing on Windows can be tested without it.
 
@@ -126,18 +125,3 @@ generator only, because `ninja` and `meson` are not installed here. Settle wheth
 Ninja takes a lock on the build dir, claim Meson build dirs (`meson-private/`, whose
 `coredata.dat` records the source dir), and add the oracle `ninja -n` plans nothing after a
 pass. Needs the creator's approval to install `ninja` and `meson` (brew or mise).
-
-### T38.1. Monorepo: an owner for a build dir outside its checkout
-
-Split off from T38. A cargo target moved out of the checkout by `build.build-dir` (or
-`CARGO_TARGET_DIR`) has no family: `inventory::git_link` walks up from the target, not from the
-project, and the build dir records no path back to the workspace that built it. Such a dir gets
-no dedupe partner, no `seed` source and no *checkout gone* orphan status. Done: an out-of-tree
-build dir lands in its owner's family, and `orphans` removes it when that owner's checkout is
-gone, with a fixture test for both.
-
-**Question for the creator before this starts:** where does the owner come from? Options:
-(a) read the absolute source paths in the profile's dep-info `.d` files — present in every
-build, but it is parsing cargo's output, a heuristic; (b) a record dunnage writes itself when
-`seed`/`worktree add`/the daemon sees a build dir being used from a workspace — exact, but only
-for dirs it has seen; (c) configuration: `[owners]` mapping build dirs to workspaces.
