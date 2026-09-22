@@ -1,6 +1,7 @@
 //! The lossy `orphans` pass: whole build dirs whose reason to exist is gone. Two reasons:
 //!
-//! - the checkout is a git worktree its repository no longer registers;
+//! - the checkout is a git worktree its repository no longer registers, or is gone altogether
+//!   while a build dir it had moved out of it is still there;
 //! - the project's manifest is gone — deleted, renamed, or absent on this branch. A branch switch
 //!   looks exactly like a deletion, so this one only counts once the build dir has been idle for
 //!   the days the caller asks for.
@@ -21,7 +22,7 @@ const SECS_PER_DAY: u64 = 24 * 60 * 60;
 /// Why a build dir has no reason left.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reason {
-    /// Git no longer has a worktree record for the checkout.
+    /// Git no longer has a worktree record for the checkout, or the checkout is gone.
     CheckoutGone,
     /// `manifest` does not exist, and the build dir was not used for `idle_days`.
     ProjectGone { manifest: PathBuf, idle_days: u64 },
@@ -30,7 +31,9 @@ pub enum Reason {
 impl Reason {
     fn text(&self) -> String {
         match self {
-            Self::CheckoutGone => "git no longer has a worktree record for this checkout".into(),
+            Self::CheckoutGone => {
+                "the checkout is gone: git has no worktree record for it, or its dir is gone".into()
+            }
             Self::ProjectGone {
                 manifest,
                 idle_days,

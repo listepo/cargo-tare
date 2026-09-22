@@ -262,8 +262,19 @@ The engine takes the adapter instead of a lock kind and locks what `guard` names
 `Guard::Immutable` ("Immutable stores"). `Held` (an embedding caller holds the build's lock, R8)
 is in the enum and refused until its task. `model::scan` records the unit's `last_used` at scan time, so
 `evict` and `incremental` re-check a unit's last build under its lock without asking cargo.
-Family and orphan status come from the owner's project, not from the build dir's parents; for
-cargo the owner is the dir above the target, so nothing changed.
+Family and orphan status come from the owner's project, not from the build dir's parents. For
+cargo the owner is the dir above the target when it holds a `Cargo.toml`. A target moved out of
+its checkout (`CARGO_TARGET_DIR`, `build.target-dir`) is owned by the workspace its dep-info
+names (`eco::cargo::depinfo`): cargo's `<profile>/*.d` give member sources by absolute path,
+rustc's `<profile>/deps/*.d` give the same files relative to the workspace root, and the
+absolute path minus the relative tail is the root. A relative path alone is ambiguous
+(`src/lib.rs` ends every package's path), so the root must explain a path of every rustc file
+that pairs at all, and none of rustc's absolute sources may lie under it — cargo passes every
+path package under the root relative to it. Several roots (a target shared by checkouts): an
+existing one, so the target is an orphan only once all are gone; roots in different
+repositories: no owner. No dep-info names a root — a target only `cargo check` wrote, or
+`build.dep-info-basedir` — and the dir above stays the owner. A `build.build-dir` records no
+absolute path to its workspace in text at all (`ideas.md`).
 
 `eco::cargo::Cargo` is the only registered adapter; `eco::cargo::home::Home` is the cargo home,
 never discovered, named by a run, guarded by `Guard::Shared(.package-cache)`. Cargo's own passes
@@ -465,7 +476,11 @@ Lossy, so it runs only with `--lossy orphans`. Two reasons (`orphans::Reason`), 
 
 - **What an orphan is.** A project whose `.git` file points at a worktree record
   (`<common dir>/worktrees/<name>`) that no longer exists — the repository was deleted, moved,
-  or the record removed by hand. The inventory already reports it (`Target::orphaned`).
+  or the record removed by hand. The inventory already reports it (`Target::orphaned`). Also a
+  project that no longer exists at all while what is left above it is in no git checkout: the
+  checkout went with it (`git worktree remove`, a deleted clone). Only a target moved out of its
+  checkout can outlive its owner that way. A project missing inside a live checkout is a
+  *project gone* instead.
 - **Only `target/` goes.** The checkout next to it stays untouched. Such a checkout can hold
   uncommitted work that git can no longer report, and `target/` is the only part of it that is
   rebuildable.
@@ -485,7 +500,8 @@ Known limits: a target with one busy profile is kept entirely, even when its oth
 free; the removal is not atomic, so an interrupted run can leave a half-removed target, which
 the next run finishes; a checkout whose repository is merely unreachable (an unmounted volume
 holding the common dir) reads as an orphan — the `.git` file points at a path that does not
-exist, and nothing else distinguishes the two.
+exist, and nothing else distinguishes the two. The same goes for a target moved out of its
+checkout while the checkout sits on an unmounted volume.
 
 ## Evict pass (`src/evict.rs`)
 

@@ -293,7 +293,22 @@ pub fn checkouts(common: &Path) -> Vec<PathBuf> {
 /// The git common dir of the repository `project` is in, and whether `project` is in a worktree
 /// that its repository no longer knows. Reads git's files directly: a worktree whose record is
 /// gone is exactly the case where `git` itself refuses to answer.
+///
+/// A project that no longer exists at all is orphaned too when what is left above it is in no
+/// checkout: its checkout went with it (`git worktree remove`, a deleted clone). Only an owner
+/// outside the build dir's own tree can be missing while the build dir is there — a target dir
+/// moved out of its checkout. Missing inside a live checkout, it is a gone project instead.
 fn git_link(project: &Path) -> (Option<PathBuf>, bool) {
+    for dir in project.ancestors() {
+        match fs::symlink_metadata(dir) {
+            Ok(_) if dir == project => break,
+            Ok(_) if checkout_root(dir).is_none() => return (None, true),
+            Ok(_) => break,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            // Unreadable is not gone.
+            Err(_) => break,
+        }
+    }
     for dir in project.ancestors() {
         let dot_git = dir.join(".git");
         let Ok(meta) = fs::symlink_metadata(&dot_git) else {

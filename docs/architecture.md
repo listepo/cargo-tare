@@ -18,6 +18,7 @@ Read off the code, not guessed:
    `inventory::git_link` walks up from the target looking for `.git`. A build dir outside the
    checkout — cargo's `build.build-dir`, an out-of-tree CMake dir, Xcode's DerivedData, a Bazel
    output base — has no family, so it gets no dedupe partner, no `seed` source and no `orphans`.
+   (T38.1: a cargo target dir moved out gets its owner from its dep-info; a `build-dir` not yet.)
 3. **`seed` knows one position.** `seed::choose` already has the right idea — "the same place
    inside the sibling checkout" — but for one dir with the hardcoded name `target`. A monorepo
    checkout has dozens of build dirs to seed.

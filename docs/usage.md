@@ -65,7 +65,7 @@ projects: it must report nothing to recompile.
 | --- | --- | --- | --- |
 | `compress` | lossless | transparent filesystem compression of files ≥ 8 KB older than 1 h | always |
 | `dedupe` | lossless | equal files become copy-on-write clones of one copy | always |
-| `orphans` | **deletes** | the whole `target/` of a worktree git no longer registers; with `--orphans-project-idle-days N`, also of a project whose `Cargo.toml` is gone and that was not built for N days | `--lossy orphans` |
+| `orphans` | **deletes** | the whole `target/` of a worktree git no longer registers, and a target moved out (`CARGO_TARGET_DIR`) whose checkout is gone; with `--orphans-project-idle-days N`, also of a project whose `Cargo.toml` is gone and that was not built for N days | `--lossy orphans` |
 | `evict` | **deletes** | profile dirs idle for N days, or the least recently built above a size cap | `--lossy evict` + a threshold |
 | `incremental` | **deletes** | `incremental/` of profile dirs idle for N days | `--lossy incremental --incremental-idle-days N` |
 | `doc` | **deletes** | `<target>/doc` | `--lossy doc` |

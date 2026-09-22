@@ -492,3 +492,54 @@ step and passes its tests. So the task goes on:
 - The bench and the spike ran on a copy of the real module cache in a temp dir. The real one was
   only read. `~/.cache/dunnage` is absent, and no `_.build.lock` is left in `$TMPDIR`.
 
+
+### T38.1. Monorepo: an owner for a build dir outside its checkout
+
+Split off from T38. A cargo target moved out of the checkout by `build.build-dir` (or
+`CARGO_TARGET_DIR`) has no family: `inventory::git_link` walks up from the target, not from the
+project, and the build dir records no path back to the workspace that built it. Such a dir gets
+no dedupe partner, no `seed` source and no *checkout gone* orphan status. Done: an out-of-tree
+build dir lands in its owner's family, and `orphans` removes it when that owner's checkout is
+gone, with a fixture test for both.
+
+**Question for the creator before this starts:** where does the owner come from? Options:
+(a) read the absolute source paths in the profile's dep-info `.d` files — present in every
+build, but it is parsing cargo's output, a heuristic; (b) a record dunnage writes itself when
+`seed`/`worktree add`/the daemon sees a build dir being used from a workspace — exact, but only
+for dirs it has seen; (c) configuration: `[owners]` mapping build dirs to workspaces.
+
+**Answer:** (a), for target dirs only. Checked on cargo 1.97: a `build.build-dir` holds no text
+record with an absolute path to its workspace (rustc's `deps/*.d` are relative to the workspace
+root, fingerprints are package-relative; only `.rmeta` and object debug info name it), and its
+profile dirs carry `.cargo-build-lock`, not `.cargo-lock`. The build-dir half goes to
+`ideas.md`.
+
+#### Result
+
+- `eco::cargo::depinfo::workspace_roots`: cargo's `<profile>/*.d` name member sources by absolute
+  path, rustc's `<profile>/deps/*.d` name them relative to the workspace root; the absolute path
+  minus the relative tail is the root. Candidates are intersected over every rustc file that
+  pairs, and a candidate with one of rustc's absolute sources under it (a path dependency outside
+  the workspace) is dropped; generated sources under the build dir do not count.
+- `Cargo::owner`: the dir above when it holds `Cargo.toml`, as before; otherwise the dep-info
+  root — an existing one of several, none when they are in different repositories — and the dir
+  above when the dep-info names none (`cargo check` only, `build.dep-info-basedir`).
+- `inventory::git_link`: a project that no longer exists, with nothing above it in a git
+  checkout, is orphaned (`Target::orphaned`, and `is_orphaned` under the lock). Missing inside a
+  live checkout it stays *project gone*.
+- `orphans::Reason::CheckoutGone` prints "the checkout is gone: git has no worktree record for
+  it, or its dir is gone".
+- `build.build-dir` owners are in `ideas.md`: no text record there names the workspace, and its
+  profile dirs carry `.cargo-build-lock`, which `profile_dirs` does not look for.
+- Docs: `README.md`, `docs/usage.md`, `DESIGN.md` (adapter owner, orphans section and its known
+  limits), `docs/architecture.md`.
+
+#### Verified
+
+`just check` (212 tests) and `just check-cross` green. `tests/out_of_tree.rs` builds with real
+cargo into `CARGO_TARGET_DIR` outside a git checkout: the target lands in the repository's family
+and checkout, next to the checkout's own target; after `git worktree remove` the worktree's
+out-of-tree target goes with `--lossy orphans` ("the checkout is gone") while the main
+checkout's target and the vendored dependency stay; a workspace moved elsewhere inside the live
+checkout is *project gone*, not orphaned. All three fail without the change. Unit tests cover the
+dep-info parsing, the single-crate case with a path dependency, and a check-only target.
