@@ -14,7 +14,7 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 | T21 | todo | P2 | 5 | 0% | |
 | T30.1 | todo | P2 | 3 | 0% | |
 | T32.1 | todo | P2 | 2 | 0% | |
-| T38.1 | todo | P2 | 3 | 0% | |
+| T38.1 | in progress | P2 | 3 | 10% | Claude Code / claude-opus-5-5 |
 
 Blockers, take these first. **T24** blocks T21: nothing on Windows can be tested without it.
 
@@ -141,3 +141,30 @@ gone, with a fixture test for both.
 build, but it is parsing cargo's output, a heuristic; (b) a record dunnage writes itself when
 `seed`/`worktree add`/the daemon sees a build dir being used from a workspace — exact, but only
 for dirs it has seen; (c) configuration: `[owners]` mapping build dirs to workspaces.
+
+**Answer:** (a), for target dirs only. Checked on cargo 1.97: a `build.build-dir` holds no text
+record with an absolute path to its workspace (rustc's `deps/*.d` are relative to the workspace
+root, fingerprints are package-relative; only `.rmeta` and object debug info name it), and its
+profile dirs carry `.cargo-build-lock`, not `.cargo-lock`. The build-dir half goes to
+`ideas.md`.
+
+#### Execution plan
+
+1. `src/eco/cargo/depinfo.rs`: the workspace roots of a target dir. Cargo's own dep-info
+   (`<profile>/*.d`) names member sources by absolute path; rustc's (`<profile>/deps/*.d`) names
+   the same files relative to the workspace root, since cargo runs rustc there. An absolute path
+   ending in a relative one, minus that tail, is the root — exact, no guessing from `Cargo.toml`.
+2. `Cargo::owner`: the dir above the target when it holds `Cargo.toml` (as now); otherwise the
+   roots from step 1. Several roots: one that still exists, so a dir shared by checkouts is an
+   orphan only once all of them are gone; roots in more than one family: no owner. No roots
+   (`cargo check` only, `dep-info-basedir`): the dir above, as now.
+3. `inventory`: a project that no longer exists, whose nearest existing ancestor is in no git
+   checkout, is a *checkout gone* orphan (`orphaned`), in the inventory and in the re-check
+   under the lock. A project missing inside a live checkout stays *project gone*.
+4. `orphans::Reason::CheckoutGone` text covers both kinds of gone checkout.
+5. Tests: unit tests for the dep-info parsing; `tests/out_of_tree.rs` with a real cargo build
+   into a `CARGO_TARGET_DIR` outside a git checkout — the target lands in the checkout's family
+   and checkout; the worktree removed with `git worktree remove` loses its out-of-tree target
+   while the main checkout's stays.
+6. Docs: `DESIGN.md`, `docs/architecture.md`, `docs/usage.md`, `README.md`; `ideas.md` for
+   build-dir owners. `just check`.
