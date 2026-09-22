@@ -1,4 +1,4 @@
-//! Inode model of a cargo profile dir: every regular file, grouped by inode.
+//! Inode model of a unit (a cargo profile dir): every regular file, grouped by inode.
 
 use std::collections::HashMap;
 use std::fs::{self, Metadata};
@@ -8,20 +8,13 @@ use std::time::SystemTime;
 
 use walkdir::WalkDir;
 
+use crate::eco::Ecosystem;
 use crate::sys;
 
-/// Cargo's per-profile lock file; its presence marks a profile dir.
-pub const CARGO_LOCK_FILE: &str = ".cargo-lock";
 /// Prefix of our temp files. Leftovers of a crashed run are removed by the next one.
-pub const TMP_PREFIX: &str = ".tare-tmp-";
+pub const TMP_PREFIX: &str = ".dunnage-tmp-";
 
-const CACHEDIR_TAG: &str = "CACHEDIR.TAG";
-/// Gradle, uv and others write the same tag file; only cargo writes this sentence.
-const CARGO_TAG_MARK: &str = "created by cargo";
-/// `<target>/<triple>/<profile>/.cargo-lock` is the deepest place a profile lock lives.
-const PROFILE_LOCK_MAX_DEPTH: usize = 3;
-
-/// Identity and version of a file. Any rewrite by cargo or rustc changes it.
+/// Identity and version of a file. Any rewrite by the build changes it.
 ///
 /// `dev` and `ino` are whatever [`sys::file_id`] means by identity on this platform: a real
 /// device and inode where the filesystem has them, the path where it does not.
@@ -92,15 +85,24 @@ pub struct Profile {
     pub dir: PathBuf,
     pub inodes: Vec<Inode>,
     pub stale_temps: Vec<PathBuf>,
+    /// When a build last worked here, as the adapter tells it, read at scan time: under the
+    /// unit's guard when the engine scans.
+    pub last_used: Option<u64>,
 }
 
-/// Walks one profile dir. Symlinks are not followed and other devices are not entered.
-pub fn scan(dir: &Path) -> io::Result<Profile> {
+/// Walks one unit. Symlinks are not followed, other devices are not entered, and the build's
+/// private files and dirs are left out.
+pub fn scan(dir: &Path, eco: &dyn Ecosystem) -> io::Result<Profile> {
     let mut by_inode: HashMap<(u64, u64), Inode> = HashMap::new();
     let mut stale_temps = Vec::new();
-    for entry in WalkDir::new(dir).follow_links(false).same_file_system(true) {
+    let walk = WalkDir::new(dir)
+        .follow_links(false)
+        .same_file_system(true)
+        .into_iter()
+        .filter_entry(|entry| entry.depth() == 0 || !eco.private(entry.file_name()));
+    for entry in walk {
         let entry = entry?;
-        if !entry.file_type().is_file() || entry.file_name() == CARGO_LOCK_FILE {
+        if !entry.file_type().is_file() {
             continue;
         }
         if entry.file_name().to_string_lossy().starts_with(TMP_PREFIX) {
@@ -123,36 +125,6 @@ pub fn scan(dir: &Path) -> io::Result<Profile> {
         dir: dir.to_path_buf(),
         inodes,
         stale_temps,
+        last_used: eco.last_used(dir),
     })
-}
-
-/// True when cargo itself tagged `dir` as a target or build dir.
-pub fn is_cargo_target(dir: &Path) -> bool {
-    fs::read_to_string(dir.join(CACHEDIR_TAG)).is_ok_and(|tag| tag.contains(CARGO_TAG_MARK))
-}
-
-/// Profile dirs of a cargo target dir. Refuses a dir that cargo did not tag as its own.
-pub fn profile_dirs(target: &Path) -> io::Result<Vec<PathBuf>> {
-    let tag = fs::read_to_string(target.join(CACHEDIR_TAG))?;
-    if !tag.contains(CARGO_TAG_MARK) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("{CACHEDIR_TAG} was not written by cargo"),
-        ));
-    }
-    let mut dirs = Vec::new();
-    let walk = WalkDir::new(target)
-        .follow_links(false)
-        .same_file_system(true)
-        .max_depth(PROFILE_LOCK_MAX_DEPTH);
-    for entry in walk {
-        let entry = entry?;
-        if entry.file_name() == CARGO_LOCK_FILE
-            && let Some(parent) = entry.path().parent()
-        {
-            dirs.push(parent.to_path_buf());
-        }
-    }
-    dirs.sort();
-    Ok(dirs)
 }

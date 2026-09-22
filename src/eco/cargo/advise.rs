@@ -1,4 +1,4 @@
-//! `cargo tare advise`: read the files that decide how big a target grows and name what to
+//! `dunnage advise`: read the files that decide how big a target grows and name what to
 //! change. Reports only — nothing here writes, and every finding says which file and which key
 //! it is about. The numbers it quotes about the cost of each change are the measured ones in
 //! `docs/research.md`.
@@ -118,7 +118,7 @@ pub fn review(file: &Path, kind: Kind, doc: &Table, nightly: bool) -> Vec<Findin
     if incremental == Some(&Value::from(true)) {
         add(
             "build.incremental",
-            "on by default for dev profiles anyway; `cargo tare run --lossy incremental` drops \
+            "on by default for dev profiles anyway; `dunnage run --lossy incremental` drops \
              the idle caches instead, at one non-incremental rebuild each"
                 .to_string(),
         );
@@ -194,8 +194,7 @@ pub fn notes(targets: &[Target]) -> Vec<Note> {
             if !built && !targets.is_empty() {
                 add(
                     checkout.display().to_string(),
-                    "a checkout with no target dir: `cargo tare seed` clones a sibling's"
-                        .to_string(),
+                    "a checkout with no target dir: `dunnage seed` clones a sibling's".to_string(),
                 );
             }
         }
@@ -221,6 +220,22 @@ pub fn notes(targets: &[Target]) -> Vec<Note> {
             format!(
                 "{} targets, {:.1} GiB, of checkouts git no longer registers: `--lossy orphans`",
                 orphaned.len(),
+                bytes as f64 / GIB as f64
+            ),
+        );
+    }
+    let gone: Vec<&Target> = targets
+        .iter()
+        .filter(|target| target.project_gone && !target.orphaned)
+        .collect();
+    if !gone.is_empty() {
+        let bytes: u64 = gone.iter().map(|target| target.allocated_bytes).sum();
+        add(
+            "projects gone".to_string(),
+            format!(
+                "{} targets, {:.1} GiB, whose `Cargo.toml` is gone (a deleted crate, or one only \
+                 another branch has): `--lossy orphans --orphans-project-idle-days N`",
+                gone.len(),
                 bytes as f64 / GIB as f64
             ),
         );

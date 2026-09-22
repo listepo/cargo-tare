@@ -2,7 +2,12 @@
 //!
 //! A cache and nothing more: a missing, truncated or foreign file reads as empty, and losing it
 //! costs one full rehash plus one redundant round of cloning.
+//!
+//! Every entry remembers when a run last looked it up, and [`HashIndex::expire`] drops the ones
+//! no run has asked about for a while: the inodes of targets that were deleted, rebuilt or are
+//! no longer under any root. Without it the file only grows.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::fs;
 use std::io;
@@ -14,12 +19,14 @@ use crate::model::Stamp;
 pub const HASH_BYTES: usize = 32;
 pub type Hash = [u8; HASH_BYTES];
 
-/// File format: magic, then fixed-size little-endian records. Bump the digit on any change.
-const MAGIC: &[u8] = b"TAREIDX1";
+/// File format: magic, then fixed-size little-endian records. Bump the digit on any change; a
+/// file with another magic reads as empty and is rewritten by the next save.
+const MAGIC: &[u8] = b"DUNIDX02";
 const U64_BYTES: usize = 8;
 const U32_BYTES: usize = 4;
-/// dev, ino, size, mtime seconds (u64 each), mtime nanoseconds (u32), hash, shared (u8).
-const RECORD_BYTES: usize = 4 * U64_BYTES + U32_BYTES + HASH_BYTES + 1;
+/// dev, ino, size, mtime seconds (u64 each), mtime nanoseconds (u32), hash, shared (u8), last
+/// seen in seconds since the epoch (u64).
+const RECORD_BYTES: usize = 5 * U64_BYTES + U32_BYTES + HASH_BYTES + 1;
 const TEMP_EXTENSION: &str = "tmp";
 const NANOS_PER_SEC: u32 = 1_000_000_000;
 
@@ -33,24 +40,62 @@ pub struct Entry {
     pub shared: bool,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct HashIndex {
-    entries: HashMap<(u64, u64), Entry>,
+#[derive(Clone, Debug)]
+struct Slot {
+    entry: Entry,
+    /// Seconds since the epoch of the last lookup. A `Cell`, so a lookup through `&self` counts.
+    seen: Cell<u64>,
 }
+
+/// Equal when the entries are: when each was last looked up is not part of the content.
+impl PartialEq for Slot {
+    fn eq(&self, other: &Self) -> bool {
+        self.entry == other.entry
+    }
+}
+
+impl Eq for Slot {}
+
+/// Equal when the entries are: when each was loaded is not part of the content.
+#[derive(Debug, Default)]
+pub struct HashIndex {
+    entries: HashMap<(u64, u64), Slot>,
+    /// What a lookup stamps on an entry: the time the index was loaded.
+    now: u64,
+}
+
+impl PartialEq for HashIndex {
+    fn eq(&self, other: &Self) -> bool {
+        self.entries == other.entries
+    }
+}
+
+impl Eq for HashIndex {}
 
 impl HashIndex {
     pub fn load(path: &Path) -> Self {
-        fs::read(path)
-            .ok()
-            .and_then(|bytes| Self::decode(&bytes))
-            .unwrap_or_default()
+        Self::load_at(path, SystemTime::now())
     }
 
-    /// The entry for this exact version of the inode; a rewritten file misses.
+    /// As [`Self::load`], with lookups stamped as made at `now`.
+    pub fn load_at(path: &Path, now: SystemTime) -> Self {
+        let mut index = fs::read(path)
+            .ok()
+            .and_then(|bytes| Self::decode(&bytes))
+            .unwrap_or_default();
+        index.now = epoch_secs(now);
+        index
+    }
+
+    /// The entry for this exact version of the inode; a rewritten file misses. A hit counts as
+    /// the entry being seen.
     pub fn get(&self, stamp: &Stamp) -> Option<&Entry> {
-        self.entries
+        let slot = self
+            .entries
             .get(&(stamp.dev, stamp.ino))
-            .filter(|e| e.size == stamp.size && e.mtime == stamp.mtime)
+            .filter(|slot| slot.entry.size == stamp.size && slot.entry.mtime == stamp.mtime)?;
+        slot.seen.set(self.now);
+        Some(&slot.entry)
     }
 
     pub fn put(&mut self, stamp: &Stamp, hash: Hash, shared: bool) {
@@ -60,16 +105,26 @@ impl HashIndex {
             hash,
             shared,
         };
-        self.entries.insert((stamp.dev, stamp.ino), entry);
+        let seen = Cell::new(self.now);
+        self.entries
+            .insert((stamp.dev, stamp.ino), Slot { entry, seen });
     }
 
     pub fn mark_shared(&mut self, stamp: &Stamp) {
-        if let Some(entry) = self.entries.get_mut(&(stamp.dev, stamp.ino))
-            && entry.size == stamp.size
-            && entry.mtime == stamp.mtime
+        if let Some(slot) = self.entries.get_mut(&(stamp.dev, stamp.ino))
+            && slot.entry.size == stamp.size
+            && slot.entry.mtime == stamp.mtime
         {
-            entry.shared = true;
+            slot.entry.shared = true;
+            slot.seen.set(self.now);
         }
+    }
+
+    /// Drop every entry no lookup has hit for longer than `idle`. The cost of dropping one that
+    /// is still wanted is one rehash of that file.
+    pub fn expire(&mut self, idle: Duration) {
+        let cutoff = self.now.saturating_sub(idle.as_secs());
+        self.entries.retain(|_, slot| slot.seen.get() >= cutoff);
     }
 
     /// Forget an inode that no longer exists.
@@ -86,8 +141,6 @@ impl HashIndex {
     }
 
     /// Temp file plus `rename`: a crash never leaves a half-written index.
-    // ponytail: entries of deleted targets are never expired; add a last-seen field and drop
-    // old ones if the file grows past a few MB.
     pub fn save(&self, path: &Path) -> io::Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -100,7 +153,7 @@ impl HashIndex {
     fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(MAGIC.len() + self.entries.len() * RECORD_BYTES);
         out.extend_from_slice(MAGIC);
-        for (&(dev, ino), entry) in &self.entries {
+        for (&(dev, ino), Slot { entry, seen }) in &self.entries {
             // A pre-1970 mtime is not worth a format with signed seconds; just do not cache it.
             let Ok(mtime) = entry.mtime.duration_since(SystemTime::UNIX_EPOCH) else {
                 continue;
@@ -111,6 +164,7 @@ impl HashIndex {
             out.extend_from_slice(&mtime.subsec_nanos().to_le_bytes());
             out.extend_from_slice(&entry.hash);
             out.push(u8::from(entry.shared));
+            out.extend_from_slice(&seen.get().to_le_bytes());
         }
         out
     }
@@ -134,6 +188,7 @@ impl HashIndex {
             let nanos = u32::from_le_bytes(take(U32_BYTES).try_into().unwrap());
             let hash: Hash = take(HASH_BYTES).try_into().unwrap();
             let shared = take(1)[0] != 0;
+            let seen = Cell::new(u64::from_le_bytes(take(U64_BYTES).try_into().unwrap()));
             if nanos >= NANOS_PER_SEC {
                 return None; // `Duration::new` would carry, and panic on overflow
             }
@@ -144,8 +199,74 @@ impl HashIndex {
                 hash,
                 shared,
             };
-            entries.insert((dev, ino), entry);
+            entries.insert((dev, ino), Slot { entry, seen });
         }
-        Some(Self { entries })
+        Some(Self { entries, now: 0 })
+    }
+}
+
+/// Seconds since the epoch; a clock before 1970 counts as the epoch.
+fn epoch_secs(time: SystemTime) -> u64 {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DAY: Duration = Duration::from_secs(24 * 60 * 60);
+
+    fn stamp(ino: u64) -> Stamp {
+        Stamp {
+            dev: 1,
+            ino,
+            size: 4096,
+            mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000),
+        }
+    }
+
+    #[test]
+    fn entries_no_run_looks_up_go_and_the_ones_it_does_stay() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("hashes.bin");
+        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000_000);
+        let (kept, gone) = (stamp(1), stamp(2));
+        let mut index = HashIndex::load_at(&path, start);
+        index.put(&kept, [1; HASH_BYTES], false);
+        index.put(&gone, [2; HASH_BYTES], false);
+        index.save(&path).unwrap();
+
+        // Twenty days on, a run looks up one of them; nothing is old enough yet.
+        let mut index = HashIndex::load_at(&path, start + 20 * DAY);
+        assert!(index.get(&kept).is_some());
+        index.expire(30 * DAY);
+        assert_eq!(index.len(), 2);
+        index.save(&path).unwrap();
+
+        // Forty days on, the one nobody asked about is thirty-plus days idle; the other is not.
+        let mut index = HashIndex::load_at(&path, start + 40 * DAY);
+        index.expire(30 * DAY);
+        assert!(index.get(&kept).is_some());
+        assert!(index.get(&gone).is_none());
+        assert_eq!(index.len(), 1);
+    }
+
+    #[test]
+    fn an_index_of_the_previous_format_reads_as_empty_and_is_rewritten() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("hashes.bin");
+        // `DUNIDX01`: one record without the last-seen field.
+        let mut old = b"DUNIDX01".to_vec();
+        old.resize(old.len() + 4 * U64_BYTES + U32_BYTES + HASH_BYTES + 1, 0);
+        fs::write(&path, old).unwrap();
+
+        let mut index = HashIndex::load(&path);
+        assert!(index.is_empty());
+        index.put(&stamp(1), [1; HASH_BYTES], false);
+        index.save(&path).unwrap();
+
+        assert!(fs::read(&path).unwrap().starts_with(MAGIC));
+        assert_eq!(HashIndex::load(&path).len(), 1);
     }
 }

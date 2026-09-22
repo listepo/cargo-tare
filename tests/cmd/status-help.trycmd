@@ -1,14 +1,15 @@
 ```
-$ cargo-tare tare status --help
+$ dunnage status --help
 List cargo target dirs under the roots: real size, families, what the passes could win
 
-Usage: cargo tare status [OPTIONS] [ROOT]...
+Usage: dunnage status [OPTIONS] [ROOT]...
 
 Arguments:
   [ROOT]...  Dirs to search; a target dir itself works too [default: .]
 
 Options:
       --json                Print the inventory as JSON
+      --all                 List every build dir, not only the largest of each checkout and ecosystem
       --cargo-home [<DIR>]  Also measure the cargo home's unpacked sources, which costs another walk [default: $CARGO_HOME, else ~/.cargo]
   -h, --help                Print help
 

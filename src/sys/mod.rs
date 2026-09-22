@@ -54,6 +54,34 @@ pub fn caps(dir: &Path) -> Caps {
     imp::caps(dir)
 }
 
+/// Whether a process called one of `tools` works in `dir`: its current dir is `dir`, below it,
+/// or a dir around it — `make` run from the project root builds into `build/`. A process in a
+/// filesystem root says nothing about any dir. `None` when it cannot be told: no tools named, no
+/// process table here, or the platform does not say. Only processes whose current dir this user
+/// may read are seen.
+pub fn tool_running(dir: &Path, tools: &[&str]) -> Option<bool> {
+    if tools.is_empty() {
+        return None;
+    }
+    let cwds = imp::tool_cwds(tools)?;
+    Some(
+        cwds.iter()
+            .any(|cwd| cwd.starts_with(dir) || (cwd.parent().is_some() && dir.starts_with(cwd))),
+    )
+}
+
+/// The temp dir build tools put their lock files in: `TMPDIR`, else, on macOS, the per-user one
+/// Foundation falls back to, where a tool started without `TMPDIR` looks too.
+pub fn temp_dir() -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("TMPDIR").is_none_or(|dir| dir.is_empty())
+        && let Some(dir) = imp::user_temp_dir()
+    {
+        return dir;
+    }
+    std::env::temp_dir()
+}
+
 /// Runs a probe inside `dir` and puts the directory's modification time back afterwards.
 ///
 /// Creating and removing a file changes the mtime of the directory it is in, and that mtime is

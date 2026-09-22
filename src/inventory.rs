@@ -1,17 +1,16 @@
-//! Read-only inventory: which cargo targets exist under some roots, how big they really are,
+//! Read-only inventory: which build dirs exist under some roots, how big they really are,
 //! which belong together, and what the passes could win. Takes no locks and changes nothing.
 
 use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use serde::Serialize;
-use walkdir::WalkDir;
 
 use crate::compress::DEFAULT_MIN_SIZE as COMPRESS_MIN_SIZE;
 use crate::dedupe::DEFAULT_MIN_SIZE as DEDUPE_MIN_SIZE;
+use crate::eco::{self, Ecosystem};
 use crate::model;
 use crate::sys::COMPRESSED;
 
@@ -31,11 +30,26 @@ pub struct ProfileInfo {
 #[derive(Debug, Default, Serialize)]
 pub struct Target {
     pub root: PathBuf,
+    /// The adapter that claimed the dir, by name: see [`eco::named`].
+    pub ecosystem: &'static str,
+    /// The checkout the project is in: the nearest dir above it holding a `.git`.
+    pub checkout: Option<PathBuf>,
+    /// Where the build dir sits inside that checkout; `None` outside it.
+    pub position: Option<PathBuf>,
+    /// What keeps a build and the passes apart here: [`eco::Guard::name`] of its first unit.
+    pub guard: &'static str,
+    /// The project the dir was built from, as the adapter tells it. Family and orphan status
+    /// are the project's.
+    #[serde(skip)]
+    pub project: Option<PathBuf>,
     pub profiles: Vec<ProfileInfo>,
     /// Targets with the same git common dir (a repository and its worktrees) form a family.
     pub family: Option<PathBuf>,
     /// The project is a git worktree whose record in the repository is gone.
     pub orphaned: bool,
+    /// The project's manifest is gone: deleted, renamed, or absent on this branch. The two look
+    /// the same, so this is reported and removed only when the build dir is idle long enough.
+    pub project_gone: bool,
     pub inodes: usize,
     pub paths: usize,
     pub logical_bytes: u64,
@@ -56,7 +70,7 @@ pub struct Target {
     /// What the filesystem under this target can do for the lossless passes. A pass whose
     /// capability is false finds no work here, and says so by planning none.
     pub caps: crate::sys::Caps,
-    pub toolchains: Vec<crate::toolchains::Built>,
+    pub toolchains: Vec<crate::eco::cargo::toolchains::Built>,
     /// Units left behind by a compiler that is no longer the one in use.
     pub stale_units: usize,
     /// What those units cost, estimated: the profile dirs' bytes in the share of the units,
@@ -70,33 +84,31 @@ pub struct Inventory {
     pub targets: Vec<Target>,
     /// Only when asked for: reading the cargo home costs another full walk.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cargo_home: Option<crate::cargo_home::Stats>,
+    pub cargo_home: Option<crate::eco::cargo::home::Stats>,
 }
 
-/// Cargo target and build dirs under `roots`. A found target is not entered.
+/// Build dirs under `roots`, by the shared walk of [`eco::discover`]. A found one is not entered.
 pub fn discover(roots: &[PathBuf]) -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    for root in roots {
-        let mut walk = WalkDir::new(root).follow_links(false).into_iter();
-        while let Some(entry) = walk.next() {
-            // A dir we may not read cannot hold a target we could work on.
-            let Ok(entry) = entry else { continue };
-            if entry.file_type().is_dir() && model::is_cargo_target(entry.path()) {
-                found.push(entry.path().to_path_buf());
-                walk.skip_current_dir();
-            }
-        }
-    }
-    found.sort();
-    found.dedup();
-    found
+    eco::discover(roots)
+        .into_iter()
+        .map(|(dir, _)| dir)
+        .collect()
 }
 
 pub fn inventory(roots: &[PathBuf]) -> io::Result<Inventory> {
+    inventory_of(eco::discover(roots))
+}
+
+/// The inventory of build dirs already found, by a walk or from [`crate::known`].
+pub fn inventory_of(found: Vec<(PathBuf, &'static dyn Ecosystem)>) -> io::Result<Inventory> {
     let mut targets = Vec::new();
     let mut sizes = Vec::new();
-    for root in discover(roots) {
-        let (target, target_sizes) = inspect(&root)?;
+    for (root, eco) in found {
+        // A dir from the known list may have been removed since; it is simply no longer there.
+        let (target, target_sizes) = match inspect(&root, eco) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            done => done?,
+        };
         targets.push(target);
         sizes.push(target_sizes);
     }
@@ -140,22 +152,41 @@ pub fn inventory(roots: &[PathBuf]) -> io::Result<Inventory> {
 }
 
 /// Totals of one target, plus allocated bytes per file size for the dedupe estimate.
-fn inspect(root: &Path) -> io::Result<(Target, HashMap<u64, u64>)> {
-    let profiles: Vec<ProfileInfo> = model::profile_dirs(root)?
+fn inspect(root: &Path, eco: &'static dyn Ecosystem) -> io::Result<(Target, HashMap<u64, u64>)> {
+    let profiles: Vec<ProfileInfo> = eco
+        .units(root)?
         .into_iter()
         .map(|dir| ProfileInfo {
-            last_built_unix: last_built(&dir),
+            last_built_unix: eco.last_used(&dir),
             allocated_bytes: 0,
             dir,
         })
         .collect();
-    let (family, orphaned) = git_link(root);
+    let project = eco.owner(root).map(|owner| owner.project);
+    let checkout = checkout_root(project.as_deref().unwrap_or(root)).map(Path::to_path_buf);
+    let position = checkout
+        .as_deref()
+        .and_then(|checkout| root.strip_prefix(checkout).ok())
+        .map(Path::to_path_buf);
+    let guard = eco
+        .guard(profiles.first().map_or(root, |profile| &profile.dir))
+        .name();
+    let (family, orphaned) = project.as_deref().map_or((None, false), git_link);
+    let project_gone = project
+        .as_deref()
+        .is_some_and(|project| is_project_gone(eco, project));
     let mut target = Target {
         root: root.to_path_buf(),
+        ecosystem: eco.name(),
+        checkout,
+        position,
+        guard,
+        project,
         last_built_unix: profiles.iter().filter_map(|p| p.last_built_unix).max(),
         profiles,
         family,
         orphaned,
+        project_gone,
         inodes: 0,
         paths: 0,
         logical_bytes: 0,
@@ -172,12 +203,12 @@ fn inspect(root: &Path) -> io::Result<(Target, HashMap<u64, u64>)> {
     };
     let mut sizes: HashMap<u64, u64> = HashMap::new();
     // The whole target, not only the profile dirs: `doc/`, `package/` and `tmp/` weigh too.
-    for inode in model::scan(root)?.inodes {
+    for inode in model::scan(root, eco)?.inodes {
         target.inodes += 1;
         target.paths += inode.paths.len();
         target.logical_bytes += inode.stamp.size;
         target.allocated_bytes += inode.allocated;
-        if inode.paths[0].starts_with(root.join(crate::doc::DIR)) {
+        if inode.paths[0].starts_with(root.join(crate::eco::cargo::doc::DIR)) {
             target.doc_bytes += inode.allocated;
         }
         let holder = target
@@ -186,7 +217,7 @@ fn inspect(root: &Path) -> io::Result<(Target, HashMap<u64, u64>)> {
             .find(|profile| inode.paths[0].starts_with(&profile.dir));
         if let Some(profile) = holder {
             profile.allocated_bytes += inode.allocated;
-            if inode.paths[0].starts_with(profile.dir.join(crate::incremental::DIR)) {
+            if inode.paths[0].starts_with(profile.dir.join(crate::eco::cargo::incremental::DIR)) {
                 target.incremental_bytes += inode.allocated;
             }
         }
@@ -207,8 +238,8 @@ fn inspect(root: &Path) -> io::Result<(Target, HashMap<u64, u64>)> {
         target.compressible_bytes = 0;
     }
     let dirs: Vec<PathBuf> = target.profiles.iter().map(|p| p.dir.clone()).collect();
-    target.toolchains = crate::toolchains::scan(&dirs);
-    target.stale_units = crate::toolchains::stale(&target.toolchains);
+    target.toolchains = crate::eco::cargo::toolchains::scan(&dirs);
+    target.stale_units = crate::eco::cargo::toolchains::stale(&target.toolchains);
     let units: usize = target.toolchains.iter().map(|built| built.units).sum();
     if target.stale_units > 0 {
         let profile_bytes: u64 = target.profiles.iter().map(|p| p.allocated_bytes).sum();
@@ -217,28 +248,27 @@ fn inspect(root: &Path) -> io::Result<(Target, HashMap<u64, u64>)> {
     Ok((target, sizes))
 }
 
-/// When cargo last worked in a profile dir: the newest mtime among its top-level entries, as
-/// unix seconds.
-pub fn last_built(profile_dir: &Path) -> Option<u64> {
-    fs::read_dir(profile_dir)
-        .ok()?
-        .filter_map(|entry| entry.ok()?.metadata().ok()?.modified().ok())
-        .max()?
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .ok()
-        .map(|since_epoch| since_epoch.as_secs())
+/// The dir of the checkout `dir` belongs to: the nearest one above it holding a `.git`.
+pub fn checkout_root(dir: &Path) -> Option<&Path> {
+    dir.ancestors().find(|above| above.join(".git").exists())
 }
 
-/// Whether the project that owns `target` is a git worktree its repository no longer knows.
-/// Cheap enough to repeat under the lock, which is what the `orphans` pass does.
-pub fn is_orphaned(target: &Path) -> bool {
-    git_link(target).1
+/// Whether `project` is in a git worktree its repository no longer knows. Cheap enough to
+/// repeat under the lock, which is what the `orphans` pass does.
+pub fn is_orphaned(project: &Path) -> bool {
+    git_link(project).1
 }
 
-/// The git common dir of the project that owns `target`, if it has one. `target` need not
-/// exist: only the directories above it are read.
-pub fn family(target: &Path) -> Option<PathBuf> {
-    git_link(target).0
+/// Whether the manifest that makes `project` a project of `eco` is missing. An adapter with no
+/// manifest never says so.
+pub fn is_project_gone(eco: &dyn Ecosystem, project: &Path) -> bool {
+    eco.manifest(project)
+        .is_some_and(|manifest| fs::symlink_metadata(manifest).is_err())
+}
+
+/// The git common dir of the repository `project` is in, if it is in one.
+pub fn family(project: &Path) -> Option<PathBuf> {
+    git_link(project).0
 }
 
 /// Every checkout git registers under this common dir: the repository itself and each worktree.
@@ -260,11 +290,11 @@ pub fn checkouts(common: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// The git common dir of the project that owns `target`, and whether the project is a worktree
+/// The git common dir of the repository `project` is in, and whether `project` is in a worktree
 /// that its repository no longer knows. Reads git's files directly: a worktree whose record is
 /// gone is exactly the case where `git` itself refuses to answer.
-fn git_link(target: &Path) -> (Option<PathBuf>, bool) {
-    for dir in target.ancestors().skip(1) {
+fn git_link(project: &Path) -> (Option<PathBuf>, bool) {
+    for dir in project.ancestors() {
         let dot_git = dir.join(".git");
         let Ok(meta) = fs::symlink_metadata(&dot_git) else {
             continue;

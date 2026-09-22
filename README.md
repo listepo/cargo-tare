@@ -1,10 +1,12 @@
-# cargo-tare
+# dunnage
 
-Tare: the weight of the packaging, not the goods. `cargo-tare` takes the dead weight out of Cargo
-`target/` directories — without deleting what you still build with and without slowing builds.
+Dunnage: the loose packing stuffed around the cargo in a hold — it takes up room and is not the
+goods. `dunnage` takes that dead weight out of Cargo `target/` directories — without deleting what you still build with and without slowing builds.
 
-Status: early. `status`, `advise`, `seed`, compress, dedupe and the opt-in `orphans` / `evict` /
-`incremental` work; the rest is in `plan.md`.
+Status: early. Every command and pass below works on macOS and Linux; Windows builds and reports
+but plans no work until `T21` in `plan.md`. A step-by-step guide is in `docs/usage.md`; whether
+the same passes fit C++, .NET, Go and other build systems is studied in `docs/ecosystems.md`,
+and the architecture that would carry them, monorepos included, in `docs/architecture.md`.
 
 ## Why
 
@@ -40,24 +42,29 @@ hardlink groups as one unit.
 Works today:
 
 ```
-cargo tare status ~/code            # read-only: every target under the root
-cargo tare status --cargo-home ~/code  # and what the registry sources weigh
-cargo tare status --json ~/code
-cargo tare run --dry-run ~/code     # plan only
-cargo tare run ~/code
-cargo tare run [--dry-run] [--pass <PASS>]... [--lossy <PASS>]... [--index <FILE>]
+dunnage status ~/code            # read-only: every target under the root
+dunnage status --cargo-home ~/code  # and what the registry sources weigh
+dunnage status --json ~/code
+dunnage run --dry-run ~/code     # plan only
+dunnage run ~/code
+dunnage run [--dry-run] [--pass <PASS>]... [--lossy <PASS>]... [--index <FILE>]
                [--config <FILE>] [--json] [<ROOT>...]
-cargo tare advise ~/code            # read-only: what makes these targets bigger
-cargo tare seed [--from <DIR>] [--dry-run] [--index <FILE>] [<DIR>]
-              [--min-age <SECS>] [--min-size <BYTES>]
-cargo tare run --cargo-home ~/code     # and the registry sources in ~/.cargo
-cargo tare run --dry-run --lossy orphans ~/code
-cargo tare run --dry-run --lossy evict --evict-idle-days 30 ~/code
-cargo tare run --lossy evict --evict-max-total-gib 50 ~/code
+               [--min-age <SECS>] [--min-size <BYTES>]
+dunnage advise ~/code            # read-only: what makes these targets bigger
+dunnage seed [--from <DIR>] [--dry-run] [--index <FILE>] [<DIR>]
+dunnage worktree add [--dry-run] [--index <FILE>] <GIT ARGS>...
+dunnage run --cargo-home ~/code     # and the registry sources in ~/.cargo
+dunnage run --store "$(go env GOCACHE)"  # a content-addressed store, compress only
+dunnage run --go                         # GOCACHE, and the unpacked modules in GOMODCACHE
+dunnage run --dry-run --lossy orphans ~/code
+dunnage run --dry-run --lossy evict --evict-idle-days 30 ~/code
+dunnage run --lossy evict --evict-max-total-gib 50 ~/code
 ```
 
-`status` lists cargo target dirs grouped by family (a repository and its worktrees): size on disk
-as `du` counts it, days since the last build, `ORPHANED` for a worktree git no longer knows, and
+`status` lists build dirs grouped by family (a repository and its worktrees), then by checkout,
+with a subtotal per ecosystem and its five largest build dirs (`--all` lists every one), each by
+its place in the checkout: size on disk as `du` counts it, days since the last build, `ORPHANED` for a worktree git no longer knows, `PROJECT GONE` for a target whose `Cargo.toml`
+is gone from a live checkout, and
 totals — bytes not compressed yet and an upper bound of what dedupe could share.
 
 `run` applies two lossless passes. **compress**: files of 8 KB and more get transparent APFS
@@ -69,7 +76,7 @@ printed at the end. A `<ROOT>` is searched for targets; a target dir itself work
 It takes cargo's own lock, skips profile dirs with a running build, leaves alone files younger
 than one hour or too small to win a block (8 KB for compress, 4 KB for dedupe), works on private
 copies and swaps them in with `rename`, keeps mtimes so nothing is rebuilt, and remembers content
-hashes in `~/.cache/cargo-tare/hashes-v1.bin` so the next run reads only new files.
+hashes in `~/.cache/dunnage/hashes-v1.bin` so the next run reads only new files.
 Only dirs carrying cargo's own `CACHEDIR.TAG` count as targets. `--lossy` enables a
 pass that deletes rebuildable data; lossless passes need no flag. How the engine keeps a target
 safe is described in `DESIGN.md`, "Engine" and "Safety invariants".
@@ -83,9 +90,12 @@ they exist for measurements, and the defaults are what `docs/bench.md` justifies
 `target/` of a checkout that is a git worktree the repository no longer registers (its `.git`
 file points at a missing worktree record). Nothing outside `target/` is touched — such a
 checkout can hold work git can no longer report. No threshold, and every removal is printed
-with its reason on a dry run too.
+with its reason on a dry run too. A target whose `Cargo.toml` is gone from a checkout that is
+still there — a deleted crate, or one only another branch has — goes too, but only with
+`--orphans-project-idle-days N` and only once it has not been built for N days: a branch switch
+looks exactly like a deletion. Without the flag it is only reported.
 
-**seed** copies instead of deleting. In a fresh worktree, `cargo tare seed` clones the target of
+**seed** copies instead of deleting. In a fresh worktree, `dunnage seed` clones the target of
 a sibling checkout of the same repository — the one built most recently, at the same place
 inside it — into yours. On APFS every file is a `clonefile`, so the new target shares its blocks
 with the old one and costs no disk space until something rewrites it. `incremental/`, the lock
@@ -143,9 +153,47 @@ running `cargo fetch` stops the pass instead of racing it. Nothing is deleted an
 content or mtime changes, which is what decides whether cargo unpacks a crate again; it does not.
 Measured on a clone of a real home (`docs/bench.md`): 1.52 GiB of registry sources down to
 469 MiB, 69% off, and the build afterwards reports nothing stale and unpacks nothing again.
-The run needs no target dirs of its own, so `cargo tare run --cargo-home` alone is a valid run,
-and `cargo tare status --cargo-home` reports the same dirs without touching them (it is opt-in
+The run needs no target dirs of its own, so `dunnage run --cargo-home` alone is a valid run,
+and `dunnage status --cargo-home` reports the same dirs without touching them (it is opt-in
 because measuring them costs a second walk).
+
+`--store DIR` compresses a content-addressed store: `GOCACHE`, `~/.cabal/store`, Zig's global
+`o/`, dune's shared cache — dirs whose files are named by their content and never get other
+bytes. There is no lock to take, so the tool touches only entries older than an hour, runs
+`compress` and nothing else, and never a lossy pass; the store's own tool evicts from it. It
+refuses ccache and sccache dirs, which compress their own entries, and any dir inside a cargo
+target or a cargo home. A `GOCACHE` after `go build std` went from 216 MiB to 64 MiB, and the
+build afterwards compiled nothing (`docs/bench.md`). Repeatable; `stores = [...]` in the config
+does the same on every run.
+
+`--go` asks `go env` for both of Go's caches: `GOCACHE` becomes a store, and `GOMODCACHE` — the
+unpacked module sources, Go's counterpart of `registry/src` — a group of its own. `go` keeps
+every module dir read-only so that nobody edits a dependency by accident. The tool makes a dir
+writable only while it swaps compressed copies into it, and puts its mode back straight after;
+no file's bytes, mode or mtime change, so `go mod verify` stays green. A module cache of 146
+MiB went down to 105 MiB (`docs/bench.md`).
+
+SwiftPM packages are found too: a `.build` dir holding `workspace-state.json`. `swift build`
+locks it with a file in the temp dir named after its path, and the tool takes the same lock, so a
+running build makes the package busy exactly as a cargo build does. Only the build outputs are
+worked on (`.build/out`, or `.build/<triple>` from the older build system); dependency checkouts
+and the mmapped compilation cache are left alone, and dedupe uses clones only. On
+swift-argument-parser built in debug and release, `.build` went from 357 MiB to 157 MiB and the
+next `swift build` compiled nothing (`docs/bench.md`). Xcode's DerivedData is not handled yet.
+
+.NET projects are found by `obj/project.assets.json`: their `obj/` and `bin/` go through the
+passes too. MSBuild takes no lock, so they get the tier for build systems without one: files
+younger than a day are left alone, a running `dotnet` in or around the project makes it busy,
+and lossy passes run only where that check could answer. Equal files are shared by clones only,
+never by hardlinks, even with `--link-artifacts`: MSBuild's `Copy` writes through a hardlink into
+every other path. `UseArtifactsOutput` (`artifacts/`) is not found yet.
+
+CMake build dirs are found by `CMakeCache.txt`, wherever they are, and go through the same
+no-lock tier: a running `cmake`, `make`, `ninja` or `ctest` in or around one makes it busy, and
+equal files are shared by clones only. The owner is the source dir the cache names, so a build
+dir whose `CMakeLists.txt` is gone shows up as such. An in-source build (`cmake .`) is never
+touched: there the build dir is the source tree. On fmt built in debug with its tests, the build
+dir went from 158 MiB to 52 MiB and the next `cmake --build` built nothing (`docs/bench.md`).
 
 **advise** changes nothing: it reads the manifests and cargo configs of the projects it finds
 and names what makes their targets bigger than they need to be — full debuginfo where
@@ -164,7 +212,7 @@ profile dir was skipped because a build held its lock — what a scheduled run n
 
 ## Configuration
 
-`$XDG_CONFIG_HOME/cargo-tare/config.toml`, or `~/.config/cargo-tare/config.toml`. Every key is
+`$XDG_CONFIG_HOME/dunnage/config.toml`, or `~/.config/dunnage/config.toml`. Every key is
 optional and every flag wins over the file; `--config <FILE>` reads another file instead, and a
 file named there must exist. An unknown key stops the run rather than being ignored.
 
@@ -180,22 +228,30 @@ idle-days = 30
 max-total-gib = 50
 whole-target = true         # take the target dir itself once all of its profiles are evicted
 
+[orphans]
+project-idle-days = 7       # with `orphans`: also a target whose Cargo.toml is gone, idle this long
+
 [incremental]
 idle-days = 7
 
+[index]
+idle-days = 30              # forget hashes no run has looked up for this long; the default
+
 [family."/Users/me/code/monorepo/.git"]
 skip = true                 # never touch this repository and its worktrees
+
+[family."/Users/me/code/big/.git"]
+skip-paths = ["vendor", "third_party/llvm"]  # these places, in every checkout
+ecosystems = ["cargo", "cmake"]              # only these build systems here
 ```
 
 A family is a repository and its worktrees, keyed by the git common dir `status` prints (a target
-without a repository is its own family). `skip` is the only per-family key: the `evict` cap and
-the idle rules are decided over everything under the roots at once, so they stay global.
-
-Planned:
-
-```
-cargo tare advise          # config findings
-```
+without a repository is its own family). Per family there is only what to leave alone: `skip`
+for all of it, `skip-paths` for build dirs whose place in their checkout starts with one of the
+paths (whole components), and `ecosystems` for the build systems it is worked on by. A skipped
+build dir is left out before any pass chooses: the `evict` cap does not count it either. The
+`evict` cap and the idle rules are decided over everything under the roots at once, so they stay
+global.
 
 ## Platforms
 
@@ -252,23 +308,21 @@ The lossless passes are safe to run unattended: they never delete, they skip a p
 running build, and exit code `2` says a build was in the way. A `just` recipe after a build:
 
 ```just
-tare:
-    cargo tare run ~/code || test $? -eq 2
+dunnage:
+    dunnage run ~/code || test $? -eq 2
 ```
 
-Or on macOS, every night, with launchd (`~/Library/LaunchAgents/dev.cargo-tare.plist`):
+Or as a service that looks when a build dir has gone cold rather than at a fixed hour:
 
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0"><dict>
-  <key>Label</key><string>dev.cargo-tare</string>
-  <key>ProgramArguments</key>
-  <array><string>/usr/bin/env</string><string>cargo</string><string>tare</string>
-         <string>run</string><string>/Users/me/code</string></array>
-  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer></dict>
-  <key>Nice</key><integer>10</integer>
-</dict></plist>
+```
+dunnage daemon install
 ```
 
-Put the roots and the lossy passes in the config file rather than in the plist, so the same
-schedule follows what you change there. Load it with `launchctl load -w <path>`.
+That writes a launchd agent (`~/Library/LaunchAgents/dev.dunnage.daemon.plist`) or a systemd
+user unit (`~/.config/systemd/user/dunnage.service`) running `dunnage daemon run` at low CPU and
+I/O priority, and starts it. The daemon runs the passes the config file names over its `roots`,
+once per build: a build dir is visited when its last build is older than `min-age`, and not
+again until it is built once more. It never keeps a build waiting for longer than its lock
+budget (2 s), lossy passes run only if the config enables them, and `dunnage daemon status`
+says what it did last and what is due when. `--print` shows the unit without installing it;
+`dunnage daemon remove` stops and removes it. Windows has no service yet.

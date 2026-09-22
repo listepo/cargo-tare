@@ -5,15 +5,15 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use cargo_tare::engine::{self, Locks, Options, Report};
-use cargo_tare::incremental::{self, Incremental};
-use cargo_tare::inventory;
-use cargo_tare::model::CARGO_LOCK_FILE;
+use dunnage::eco::cargo::incremental::{self, Incremental};
+use dunnage::eco::cargo::{CARGO, LOCK_FILE};
+use dunnage::engine::{self, Options, Report};
+use dunnage::inventory;
 use predicates::str::contains;
 use tempfile::TempDir;
 
 mod common;
-use common::{Fixture, allocated_bytes, fake_target, run_unbusy, tare as tare_in};
+use common::{Fixture, allocated_bytes, dunnage as dunnage_in, fake_target, run_unbusy};
 
 const KIB: usize = 1024;
 const CACHE_KIB: usize = 256;
@@ -44,6 +44,7 @@ fn named() -> Options {
     Options {
         dry_run: false,
         lossy: vec![incremental::NAME.to_string()],
+        ..Options::default()
     }
 }
 
@@ -58,7 +59,7 @@ fn run(root: &Path, idle_days: u64, opts: &Options) -> Report {
             .collect();
         let dirs: Vec<PathBuf> = profiles.iter().map(|profile| profile.dir.clone()).collect();
         let pass = Incremental::new(incremental::select(&profiles, now_unix(), idle_days));
-        engine::run(&dirs, &[&pass], opts, Locks::PerDir).unwrap()
+        engine::run(&dirs, &[&pass], opts, &CARGO).unwrap()
     })
 }
 
@@ -81,7 +82,7 @@ fn an_idle_cache_goes_and_the_rest_of_the_profile_stays() {
     assert!(!idle.join("incremental").exists());
     // Only the cache: the artifacts, the lock file and the target itself are untouched.
     assert!(idle.join("deps/libx.rlib").exists());
-    assert!(idle.join(CARGO_LOCK_FILE).exists());
+    assert!(idle.join(LOCK_FILE).exists());
     assert!(fresh.join("incremental").exists());
 }
 
@@ -122,7 +123,7 @@ fn a_profile_with_a_running_build_is_not_touched() {
     let idle = idle_target(&root, "idle", IDLE_DAYS + 1);
     let build = File::options()
         .write(true)
-        .open(idle.join(CARGO_LOCK_FILE))
+        .open(idle.join(LOCK_FILE))
         .unwrap();
     build.lock().unwrap();
 
@@ -144,13 +145,7 @@ fn a_profile_built_after_the_inventory_keeps_its_cache() {
     // A build slips in between the inventory and our lock.
     fs::write(idle.join("fresh-artifact"), b"new").unwrap();
     let report = run_unbusy(|| {
-        engine::run(
-            std::slice::from_ref(&idle),
-            &[&pass],
-            &named(),
-            Locks::PerDir,
-        )
-        .unwrap()
+        engine::run(std::slice::from_ref(&idle), &[&pass], &named(), &CARGO).unwrap()
     });
 
     assert_eq!(report.passes[0].planned, 0, "{report:?}");
@@ -206,20 +201,20 @@ fn cli_drops_the_cache_only_when_asked_with_a_limit() {
     let (_tmp, root) = root();
     let idle = idle_target(&root, "idle", IDLE_DAYS + 1);
     let index = root.join("index.bin");
-    let tare = || {
-        let mut cmd = tare_in(&root);
+    let dunnage = || {
+        let mut cmd = dunnage_in(&root);
         cmd.args(["run", "--pass", "incremental", "--index"]);
         cmd.arg(&index);
         cmd
     };
 
-    tare()
+    dunnage()
         .args(["--lossy", "incremental"])
         .arg(&root)
         .assert()
         .code(EXIT_FAILURE)
         .stderr(contains("need each other"));
-    tare()
+    dunnage()
         .args(["--incremental-idle-days", "7"])
         .arg(&root)
         .assert()
@@ -227,7 +222,7 @@ fn cli_drops_the_cache_only_when_asked_with_a_limit() {
         .stderr(contains("need each other"));
     assert!(idle.join("incremental").exists());
 
-    tare()
+    dunnage()
         .args([
             "--dry-run",
             "--lossy",
@@ -242,7 +237,7 @@ fn cli_drops_the_cache_only_when_asked_with_a_limit() {
         .stdout(contains("no build for 8 days"));
     assert!(idle.join("incremental").exists());
 
-    tare()
+    dunnage()
         .args(["--lossy", "incremental", "--incremental-idle-days", "7"])
         .arg(&root)
         .assert()

@@ -5,17 +5,29 @@
 //! a file that changed since the scan, and through a temp file plus `rename`. A pass that
 //! rewrites content (compression) only ever gets private copies to work on.
 
+use std::cell::Cell;
 use std::fs::{self, File, FileTimes, TryLockError};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime};
 
-use crate::model::{self, CARGO_LOCK_FILE, Inode, Profile, Stamp, TMP_PREFIX};
+use crate::eco::{Ecosystem, Guard};
+use crate::model::{self, Inode, Profile, Stamp, TMP_PREFIX};
 use crate::sys::{self, COMPRESSED};
 
 /// Copies handed to [`Pass::compress`] at once: bounds the work a crash throws away and the
 /// time between checking a group and swapping its copy in.
 const COMPRESS_BATCH: usize = 256;
+/// Rounds one run makes at most with [`Options::until_settled`]: a pass that keeps finding
+/// work must not keep the locks forever.
+const MAX_ROUNDS: usize = 8;
+/// Files of a [`Guard::Quiet`] unit younger than this are left out of the model: with no lock,
+/// a file the build wrote an hour ago may be one it is still writing. No pass setting lowers it.
+pub const QUIET_MIN_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+/// The same floor for a [`Guard::Immutable`] store: an entry is never rewritten, only written
+/// once, and an hour keeps the passes off one still being written.
+pub const IMMUTABLE_MIN_AGE: Duration = Duration::from_secs(60 * 60);
 
 /// How a replacement gets its bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,6 +99,8 @@ pub trait Pass {
 pub struct Options {
     pub dry_run: bool,
     pub lossy: Vec<String>,
+    /// Run the passes again while a round applies anything; a dry run is always one round.
+    pub until_settled: bool,
 }
 
 /// Why a planned group was left alone.
@@ -107,6 +121,11 @@ pub enum Skip {
     Changed,
     /// The backend left the copy uncompressed: not worth it, not supported, or an error there.
     NotCompressed,
+    /// Lossy, in a unit without a lock where a check said "maybe": a young file, or a build
+    /// tool nobody could look for.
+    Unsure,
+    /// The file is in use: running, or open without sharing on Windows. Its unit counts as busy.
+    Busy,
     Failed(io::ErrorKind),
 }
 
@@ -126,6 +145,26 @@ pub struct PassReport {
 }
 
 impl PassReport {
+    /// A later round: it adds what it applied, and what it skipped or removed for the first
+    /// time. Planned counts only those, since a group skipped for good is planned every round.
+    fn absorb(&mut self, round: PassReport) {
+        let new_skips: Vec<_> = round
+            .skipped
+            .into_iter()
+            .filter(|(path, _)| !self.skipped.iter().any(|(seen, _)| seen == path))
+            .collect();
+        self.planned += round.applied + new_skips.len();
+        self.planned_bytes += round.freed_bytes;
+        self.applied += round.applied;
+        self.freed_bytes += round.freed_bytes;
+        self.skipped.extend(new_skips);
+        for removal in round.removals {
+            if !self.removals.iter().any(|(seen, _)| *seen == removal.0) {
+                self.removals.push(removal);
+            }
+        }
+    }
+
     fn skip(&mut self, member: &Inode, skip: Skip) {
         let path = member.paths.first().cloned().unwrap_or_default();
         self.skipped.push((path, skip));
@@ -134,10 +173,63 @@ impl PassReport {
 
 #[derive(Debug, Default)]
 pub struct Report {
-    /// Profile dirs skipped because a build held their lock.
+    /// Units a build was seen in: skipped because it held their lock or its tool ran there, or
+    /// worked on until one of their files was found in use.
     pub busy: Vec<PathBuf>,
+    /// Units worked on without a lock: [`Guard::Quiet`] and [`Guard::Immutable`] ones.
+    pub quiet: Vec<PathBuf>,
     pub temps_removed: usize,
     pub passes: Vec<PassReport>,
+    /// Set when the run let go before its plan was done; the rest was never started.
+    pub interrupted: Option<Interrupted>,
+    /// Rounds of every pass that ran; more than one only with [`Options::until_settled`].
+    pub rounds: usize,
+}
+
+impl Report {
+    /// Adds a round's pass reports to the ones before it, pass by pass.
+    fn absorb(&mut self, round: Vec<PassReport>) {
+        if self.passes.is_empty() {
+            self.passes = round;
+            return;
+        }
+        for (total, pass) in self.passes.iter_mut().zip(round) {
+            total.absorb(pass);
+        }
+    }
+}
+
+/// Why a run let go of its locks early.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Interrupted {
+    /// The caller raised its stop flag.
+    Stopped,
+    /// The locks were held for as long as the caller allowed.
+    OutOfBudget,
+}
+
+/// When a run has to let go, checked between two actions and between two compress batches:
+/// every action is a whole replacement or removal, so what a run leaves behind is old or new,
+/// never half of either.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Interrupt<'a> {
+    pub stop: Option<&'a AtomicBool>,
+    pub deadline: Option<Instant>,
+}
+
+impl Interrupt<'_> {
+    fn due(&self) -> Option<Interrupted> {
+        if self.stop.is_some_and(|stop| stop.load(Ordering::Relaxed)) {
+            Some(Interrupted::Stopped)
+        } else if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            Some(Interrupted::OutOfBudget)
+        } else {
+            None
+        }
+    }
 }
 
 /// Delete `dir` whole and account for it, unless the caller's guard already refused it.
@@ -145,18 +237,12 @@ pub struct Report {
 /// which is exactly what `cargo clean` leaves behind as well.
 fn remove(
     dir: PathBuf,
-    unlocked: bool,
+    refused: Option<Skip>,
     bytes: u64,
     locked: &mut Vec<PathBuf>,
     pass_report: &mut PassReport,
 ) {
-    let skip = if unlocked {
-        Some(Skip::Unlocked)
-    } else {
-        fs::remove_dir_all(&dir)
-            .err()
-            .map(|e| Skip::Failed(e.kind()))
-    };
+    let skip = refused.or_else(|| fs::remove_dir_all(&dir).err().map(|e| failed(&e)));
     match skip {
         None => {
             pass_report.applied += 1;
@@ -167,21 +253,36 @@ fn remove(
     }
 }
 
-/// Cargo's own per-profile lock, held exclusively until dropped.
+/// The build's own lock on a unit, held exclusively until dropped.
 pub struct ProfileLock {
     _file: File,
 }
 
 impl ProfileLock {
-    /// `None` when a build holds the lock. A missing lock file is an error: not a profile dir.
-    pub fn try_acquire(profile_dir: &Path) -> io::Result<Option<Self>> {
-        Self::try_lock_file(&profile_dir.join(CARGO_LOCK_FILE))
+    /// The lock `guard` names. `None` when a build holds it, and for [`Guard::Quiet`] and
+    /// [`Guard::Immutable`], which have none to take. A missing [`Guard::Lock`] file is an error:
+    /// not a unit. A missing [`Guard::Shared`] one is created, as the build tool creates it: it
+    /// lives outside the units, where a temp dir cleaner may have taken it. [`Guard::Held`] is not
+    /// implemented and refused.
+    pub fn try_guard(guard: &Guard) -> io::Result<Option<Self>> {
+        match guard {
+            Guard::Lock(file) => Self::try_lock_file(file, false),
+            Guard::Shared(file) => Self::try_lock_file(file, true),
+            Guard::Quiet | Guard::Immutable => Ok(None),
+            Guard::Held => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("{guard:?} is not implemented"),
+            )),
+        }
     }
 
-    /// The same, for a lock file named directly — `$CARGO_HOME/.package-cache`, which cargo
-    /// holds for every dir of the cargo home at once.
-    pub fn try_lock_file(file: &Path) -> io::Result<Option<Self>> {
-        let file = File::options().read(true).write(true).open(file)?;
+    fn try_lock_file(file: &Path, create: bool) -> io::Result<Option<Self>> {
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .create(create)
+            .truncate(false)
+            .open(file)?;
         match file.try_lock() {
             Ok(()) => Ok(Some(Self { _file: file })),
             Err(TryLockError::WouldBlock) => Ok(None),
@@ -190,22 +291,25 @@ impl ProfileLock {
     }
 }
 
-/// Which lock guards the dirs of a run.
-#[derive(Clone, Copy, Debug)]
-pub enum Locks<'a> {
-    /// Cargo's per-profile lock: each dir carries its own `.cargo-lock`, and a dir whose lock a
-    /// build holds is left out of the run.
-    PerDir,
-    /// One lock file for every dir at once, the way cargo guards its home with
-    /// `.package-cache`. Held: every dir is worked on. Busy: none of them is.
-    Shared(&'a Path),
-}
-
+/// Every pass over `profile_dirs`, the units of `eco`, each under the guard `eco` names for it.
+/// A unit whose guard a build holds is left out of the run; units under one shared guard are
+/// all in or all out.
 pub fn run(
     profile_dirs: &[PathBuf],
     passes: &[&dyn Pass],
     opts: &Options,
-    locks_of: Locks<'_>,
+    eco: &dyn Ecosystem,
+) -> io::Result<Report> {
+    run_with(profile_dirs, passes, opts, eco, Interrupt::default())
+}
+
+/// [`run`], letting go early when `interrupt` says so.
+pub fn run_with(
+    profile_dirs: &[PathBuf],
+    passes: &[&dyn Pass],
+    opts: &Options,
+    eco: &dyn Ecosystem,
+    interrupt: Interrupt<'_>,
 ) -> io::Result<Report> {
     // Sorted order, so two concurrent runs cannot take the same locks in opposite order.
     let mut dirs = profile_dirs.to_vec();
@@ -215,28 +319,59 @@ pub fn run(
     let mut report = Report::default();
     let mut locks = Vec::new();
     let mut locked = Vec::new();
-    match locks_of {
-        Locks::PerDir => {
-            for dir in dirs {
-                match ProfileLock::try_acquire(&dir)? {
-                    Some(lock) => {
-                        locks.push(lock);
-                        locked.push(dir);
+    // A shared guard is tried once, in the order its first unit comes.
+    let mut shared: Vec<(Guard, bool)> = Vec::new();
+    // Quiet units where a check could not say "no build here": lossy passes leave them alone.
+    let mut unsure: Vec<PathBuf> = Vec::new();
+    // Units without a lock, with the age their files need to be in the model.
+    let mut floors: Vec<(PathBuf, Duration)> = Vec::new();
+    for dir in dirs {
+        let guard = eco.guard(&dir);
+        let held = match &guard {
+            Guard::Quiet => match sys::tool_running(&dir, eco.tools()) {
+                Some(true) => false,
+                found => {
+                    if found.is_none() {
+                        unsure.push(dir.clone());
                     }
-                    None => report.busy.push(dir),
+                    floors.push((dir.clone(), QUIET_MIN_AGE));
+                    report.quiet.push(dir.clone());
+                    true
                 }
+            },
+            // Nothing a lossy pass could want is here: the store's own tool evicts from it.
+            Guard::Immutable => {
+                unsure.push(dir.clone());
+                floors.push((dir.clone(), IMMUTABLE_MIN_AGE));
+                report.quiet.push(dir.clone());
+                true
             }
+            Guard::Shared(_) => match shared.iter().find(|(seen, _)| *seen == guard) {
+                Some(&(_, held)) => held,
+                None => {
+                    let lock = ProfileLock::try_guard(&guard)?;
+                    let held = lock.is_some();
+                    locks.extend(lock);
+                    shared.push((guard, held));
+                    held
+                }
+            },
+            _ => match ProfileLock::try_guard(&guard)? {
+                Some(lock) => {
+                    locks.push(lock);
+                    true
+                }
+                None => false,
+            },
+        };
+        if held {
+            locked.push(dir);
+        } else {
+            report.busy.push(dir);
         }
-        Locks::Shared(file) => match ProfileLock::try_lock_file(file)? {
-            Some(lock) => {
-                locks.push(lock);
-                locked = dirs;
-            }
-            None => report.busy = dirs,
-        },
     }
 
-    let mut profiles = scan_all(&locked)?;
+    let mut profiles = scan_all(&locked, eco, &floors, &mut unsure)?;
     if !opts.dry_run {
         for temp in profiles.iter().flat_map(|p| &p.stale_temps) {
             fs::remove_file(temp)?;
@@ -244,92 +379,205 @@ pub fn run(
         }
     }
 
-    for pass in passes {
-        if pass.lossy() && !opts.lossy.iter().any(|name| name == pass.name()) {
-            continue;
-        }
-        let mut pass_report = PassReport {
-            name: pass.name(),
-            ..PassReport::default()
-        };
-        let mut removal_tried = false;
-        let mut to_compress = Vec::new();
-        for action in pass.plan(&profiles) {
-            let bytes = match &action {
-                Action::Replace(replace) => replace.member.allocated,
-                Action::Compress(inode) => inode.allocated,
-                Action::Remove { dir, reason } => {
-                    pass_report.removals.push((dir.clone(), reason.clone()));
-                    profiles
-                        .iter()
-                        .filter(|profile| dir.starts_with(&profile.dir))
-                        .flat_map(|profile| &profile.inodes)
-                        // A link from outside survives the removal, so nothing is freed by it.
-                        .filter(|inode| inode.paths.iter().all(|path| path.starts_with(dir)))
-                        .map(|inode| inode.allocated)
-                        .sum()
-                }
-                Action::RemoveTarget {
-                    dir, reason, bytes, ..
-                } => {
-                    pass_report.removals.push((dir.clone(), reason.clone()));
-                    *bytes
-                }
-            };
-            pass_report.planned += 1;
-            pass_report.planned_bytes += bytes;
-            if opts.dry_run {
+    // Passes feed each other — dedupe's clones are files compress has not looked at — so a
+    // round can leave work for the next one. Every round runs under the locks taken above.
+    loop {
+        report.rounds += 1;
+        let mut round = Vec::new();
+        let mut progressed = false;
+        for pass in passes {
+            if pass.lossy() && !opts.lossy.iter().any(|name| name == pass.name()) {
                 continue;
             }
-            match action {
-                Action::Compress(inode) => to_compress.push(inode),
-                Action::Remove { dir, .. } => {
-                    removal_tried = true;
-                    // A locked profile dir or something inside it, never one around it.
-                    let unlocked = !locked.iter().any(|held| dir.starts_with(held));
-                    remove(dir, unlocked, bytes, &mut locked, &mut pass_report);
+            let mut pass_report = PassReport {
+                name: pass.name(),
+                ..PassReport::default()
+            };
+            let mut removal_tried = false;
+            let mut to_compress = Vec::new();
+            for action in pass.plan(&profiles) {
+                if let Some(why) = interrupt.due() {
+                    report.interrupted = Some(why);
+                    break;
                 }
-                Action::RemoveTarget { target, dir, .. } => {
-                    removal_tried = true;
-                    // Ours only if the target holds still: we have a lock inside it, nothing in
-                    // it is being built, and what goes is inside it.
-                    let holds_lock = locked.iter().any(|held| held.starts_with(&target));
-                    let building = report.busy.iter().any(|busy| busy.starts_with(&target));
-                    let unlocked = !holds_lock || building || !dir.starts_with(&target);
-                    remove(dir, unlocked, bytes, &mut locked, &mut pass_report);
-                }
-                Action::Replace(replace) => match apply_replace(&replace, &locked) {
-                    None => {
-                        pass_report.applied += 1;
-                        pass_report.freed_bytes += replace.member.allocated;
-                        // Under the lock nobody else can have touched the new inode yet.
-                        pass.replaced(&replace, &Stamp::read(&replace.member.paths[0])?);
+                let bytes = match &action {
+                    Action::Replace(replace) => replace.member.allocated,
+                    Action::Compress(inode) => inode.allocated,
+                    Action::Remove { dir, reason } => {
+                        pass_report.removals.push((dir.clone(), reason.clone()));
+                        profiles
+                            .iter()
+                            .filter(|profile| dir.starts_with(&profile.dir))
+                            .flat_map(|profile| &profile.inodes)
+                            // A link from outside survives the removal, so nothing is freed by it.
+                            .filter(|inode| inode.paths.iter().all(|path| path.starts_with(dir)))
+                            .map(|inode| inode.allocated)
+                            .sum()
                     }
-                    Some(skip) => pass_report.skip(&replace.member, skip),
-                },
+                    Action::RemoveTarget {
+                        dir, reason, bytes, ..
+                    } => {
+                        pass_report.removals.push((dir.clone(), reason.clone()));
+                        *bytes
+                    }
+                };
+                pass_report.planned += 1;
+                pass_report.planned_bytes += bytes;
+                if opts.dry_run {
+                    continue;
+                }
+                match action {
+                    Action::Compress(inode) => to_compress.push(inode),
+                    Action::Remove { dir, .. } => {
+                        removal_tried = true;
+                        // A locked profile dir or something inside it, never one around it.
+                        let refused = if !locked.iter().any(|held| dir.starts_with(held)) {
+                            Some(Skip::Unlocked)
+                        } else if unsure.iter().any(|unit| dir.starts_with(unit)) {
+                            Some(Skip::Unsure)
+                        } else {
+                            None
+                        };
+                        remove(dir, refused, bytes, &mut locked, &mut pass_report);
+                    }
+                    Action::RemoveTarget { target, dir, .. } => {
+                        removal_tried = true;
+                        // Ours only if the target holds still: we have a lock inside it, nothing in
+                        // it is being built, and what goes is inside it.
+                        let holds_lock = locked.iter().any(|held| held.starts_with(&target));
+                        let building = report.busy.iter().any(|busy| busy.starts_with(&target));
+                        let refused = if !holds_lock || building || !dir.starts_with(&target) {
+                            Some(Skip::Unlocked)
+                        } else if unsure.iter().any(|unit| unit.starts_with(&target)) {
+                            Some(Skip::Unsure)
+                        } else {
+                            None
+                        };
+                        remove(dir, refused, bytes, &mut locked, &mut pass_report);
+                    }
+                    Action::Replace(replace) => match apply_replace(&replace, &locked) {
+                        None => {
+                            pass_report.applied += 1;
+                            pass_report.freed_bytes += replace.member.allocated;
+                            // Under the lock nobody else can have touched the new inode yet.
+                            pass.replaced(&replace, &Stamp::read(&replace.member.paths[0])?);
+                        }
+                        Some(skip) => pass_report.skip(&replace.member, skip),
+                    },
+                }
             }
+            for batch in to_compress.chunks(COMPRESS_BATCH) {
+                if let Some(why) = interrupt.due() {
+                    report.interrupted = Some(why);
+                    break;
+                }
+                apply_compress(
+                    batch,
+                    &locked,
+                    *pass,
+                    passes,
+                    eco.lifts_read_only_dirs(),
+                    &mut pass_report,
+                )?;
+            }
+            if report.interrupted.is_some() {
+                round.push(pass_report);
+                break;
+            }
+            note_busy(&pass_report, &locked, &mut report.busy);
+            // A removal that failed half way has changed the dir too.
+            if pass_report.applied > 0 || removal_tried {
+                // ponytail: full rescan so the next pass sees the new inodes; patch the model in
+                // place if scan time ever shows up in the benchmarks.
+                profiles = scan_all(&locked, eco, &floors, &mut unsure)?;
+            }
+            progressed |= pass_report.applied > 0;
+            round.push(pass_report);
         }
-        for batch in to_compress.chunks(COMPRESS_BATCH) {
-            apply_compress(batch, &locked, *pass, passes, &mut pass_report);
+        report.absorb(round);
+        // "Applied nothing", not "planned nothing": a group skipped for good is planned again
+        // by every round.
+        let again = opts.until_settled
+            && !opts.dry_run
+            && progressed
+            && report.interrupted.is_none()
+            && report.rounds < MAX_ROUNDS;
+        if !again {
+            break;
         }
-        // A removal that failed half way has changed the dir too.
-        if pass_report.applied > 0 || removal_tried {
-            // ponytail: full rescan so the next pass sees the new inodes; patch the model in
-            // place if scan time ever shows up in the benchmarks.
-            profiles = scan_all(&locked)?;
-        }
-        report.passes.push(pass_report);
     }
     drop(locks);
     Ok(report)
 }
 
-fn scan_all(dirs: &[PathBuf]) -> io::Result<Vec<Profile>> {
-    dirs.iter().map(|dir| model::scan(dir)).collect()
+/// Scans `dirs`. In a unit with a floor, files younger than it are left out, and a unit that had
+/// any becomes `unsure`.
+fn scan_all(
+    dirs: &[PathBuf],
+    eco: &dyn Ecosystem,
+    floors: &[(PathBuf, Duration)],
+    unsure: &mut Vec<PathBuf>,
+) -> io::Result<Vec<Profile>> {
+    let now = SystemTime::now();
+    let mut profiles = Vec::with_capacity(dirs.len());
+    for dir in dirs {
+        let mut profile = model::scan(dir, eco)?;
+        if let Some((_, floor)) = floors.iter().find(|(unit, _)| unit == dir) {
+            let young = |inode: &Inode| {
+                now.duration_since(inode.stamp.mtime)
+                    .map_or(true, |age| age < *floor)
+            };
+            let before = profile.inodes.len();
+            profile.inodes.retain(|inode| !young(inode));
+            if profile.inodes.len() < before && !unsure.contains(dir) {
+                unsure.push(dir.clone());
+            }
+        }
+        profiles.push(profile);
+    }
+    Ok(profiles)
+}
+
+/// What an I/O error on one file makes of it: busy when a build has the file in use, which is
+/// what a build without a lock looks like from outside.
+fn failed(e: &io::Error) -> Skip {
+    let busy = matches!(
+        e.kind(),
+        io::ErrorKind::ExecutableFileBusy | io::ErrorKind::ResourceBusy
+    ) || (cfg!(windows)
+        && matches!(e.raw_os_error(), Some(SHARING_VIOLATION | LOCK_VIOLATION)));
+    if busy {
+        Skip::Busy
+    } else {
+        Skip::Failed(e.kind())
+    }
+}
+
+/// `ERROR_SHARING_VIOLATION` and `ERROR_LOCK_VIOLATION`: another process has the file open
+/// without sharing, or a range of it locked.
+const SHARING_VIOLATION: i32 = 32;
+const LOCK_VIOLATION: i32 = 33;
+
+/// Adds the unit of every file the pass found busy to `busy`, once.
+fn note_busy(pass_report: &PassReport, locked: &[PathBuf], busy: &mut Vec<PathBuf>) {
+    let found = pass_report
+        .skipped
+        .iter()
+        .filter(|(_, skip)| *skip == Skip::Busy)
+        .flat_map(|(path, _)| {
+            locked
+                .iter()
+                .filter(move |unit| path.starts_with(unit) || unit.starts_with(path))
+        });
+    for unit in found {
+        if !busy.contains(unit) {
+            busy.push(unit.clone());
+        }
+    }
 }
 
 fn apply_replace(replace: &Replace, locked: &[PathBuf]) -> Option<Skip> {
-    try_replace(replace, locked).unwrap_or_else(|e| Some(Skip::Failed(e.kind())))
+    try_replace(replace, locked).unwrap_or_else(|e| Some(failed(&e)))
 }
 
 fn try_replace(replace: &Replace, locked: &[PathBuf]) -> io::Result<Option<Skip>> {
@@ -359,18 +607,37 @@ fn try_replace(replace: &Replace, locked: &[PathBuf]) -> io::Result<Option<Skip>
     }
 
     let temp = sibling_temp(&member.paths[0]);
-    match replace.how {
-        Share::Clone => swap_in(&temp, member, || clone_as(source, &temp, member))?,
+    // The source of a clone is checked once more after the copy: a build without a lock may
+    // have written it while it was copied, and those bytes must not land under the member's
+    // names.
+    let moved = Cell::new(false);
+    let held_still = || {
+        let still = Stamp::read(source)? == *source_stamp;
+        moved.set(!still);
+        if still {
+            Ok(())
+        } else {
+            Err(io::Error::other("the source changed while it was copied"))
+        }
+    };
+    let swapped = match replace.how {
+        Share::Clone => swap_in(&temp, member, || {
+            clone_as(source, &temp, member).and_then(|()| held_still())
+        }),
         Share::Link => {
             // One inode under both names means one mode for both: linking files whose
             // permissions differ would quietly change the other name's.
             if sys::mode(&fs::symlink_metadata(source)?) != member.mode {
                 return Ok(Some(Skip::ModeMismatch));
             }
-            swap_in(&temp, member, || link_as(source, &temp, member))?;
+            // No check after: a link is the source itself, and `link_as` may move its mtime.
+            swap_in(&temp, member, || link_as(source, &temp, member))
         }
+    };
+    match swapped {
+        Err(_) if moved.get() => Ok(Some(Skip::Changed)),
+        other => other.map(|()| None),
     }
-    Ok(None)
 }
 
 fn is_locked(path: &Path, locked: &[PathBuf]) -> bool {
@@ -404,14 +671,16 @@ fn apply_compress(
     locked: &[PathBuf],
     pass: &dyn Pass,
     passes: &[&dyn Pass],
+    lift: bool,
     report: &mut PassReport,
-) {
+) -> io::Result<()> {
+    let lifted = if lift { lift_dirs(batch) } else { Vec::new() };
     let mut staged = Vec::new();
     for member in batch {
         match stage_copy(member, locked) {
             Ok(Ok(copy)) => staged.push((member, copy)),
             Ok(Err(skip)) => report.skip(member, skip),
-            Err(e) => report.skip(member, Skip::Failed(e.kind())),
+            Err(e) => report.skip(member, failed(&e)),
         }
     }
     let copies: Vec<PathBuf> = staged.iter().map(|(_, copy)| copy.clone()).collect();
@@ -426,9 +695,52 @@ fn apply_compress(
                 }
             }
             Ok(Err(skip)) => report.skip(member, skip),
-            Err(e) => report.skip(member, Skip::Failed(e.kind())),
+            Err(e) => report.skip(member, failed(&e)),
         }
     }
+    // A dir left writable is what its tool set out to prevent: the run stops and says where.
+    // Every dir is put back before the first failure is told.
+    let mut first = None;
+    for (dir, mode) in lifted {
+        if let Err(e) = sys::set_mode(&dir, mode) {
+            first.get_or_insert_with(|| {
+                io::Error::new(
+                    e.kind(),
+                    format!("{}: putting its mode {mode:o} back: {e}", dir.display()),
+                )
+            });
+        }
+    }
+    first.map_or(Ok(()), Err)
+}
+
+/// Lifts the owner write bit of every read-only dir that holds a member of `batch`, so a temp
+/// copy can be made and renamed there. Returns each lifted dir with the mode to put back. A dir
+/// that cannot be lifted is left as it is, and its members fail as they would have. On Windows a
+/// read-only dir does not stop anyone from creating files in it: nothing to lift.
+fn lift_dirs(batch: &[Inode]) -> Vec<(PathBuf, u32)> {
+    const OWNER_WRITE: u32 = 0o200;
+    let mut lifted: Vec<(PathBuf, u32)> = Vec::new();
+    if !cfg!(unix) {
+        return lifted;
+    }
+    for dir in batch
+        .iter()
+        .flat_map(|member| &member.paths)
+        .filter_map(|path| path.parent())
+    {
+        if lifted.iter().any(|(done, _)| done == dir) {
+            continue;
+        }
+        let Ok(meta) = fs::symlink_metadata(dir) else {
+            continue;
+        };
+        let mode = sys::mode(&meta);
+        if mode & OWNER_WRITE == 0 && sys::set_mode(dir, mode | OWNER_WRITE).is_ok() {
+            lifted.push((dir.to_path_buf(), mode));
+        }
+    }
+    lifted
 }
 
 /// A private copy of the group's content next to its first path. Costs no space: a clone.
@@ -539,4 +851,29 @@ fn sibling_temp(path: &Path) -> PathBuf {
         COUNTER.fetch_add(1, Ordering::Relaxed)
     );
     path.with_file_name(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_file_in_use_is_busy_and_other_errors_are_failures() {
+        for kind in [
+            io::ErrorKind::ExecutableFileBusy,
+            io::ErrorKind::ResourceBusy,
+        ] {
+            assert_eq!(failed(&io::Error::from(kind)), Skip::Busy);
+        }
+        assert_eq!(
+            failed(&io::Error::from(io::ErrorKind::PermissionDenied)),
+            Skip::Failed(io::ErrorKind::PermissionDenied)
+        );
+        let sharing = io::Error::from_raw_os_error(SHARING_VIOLATION);
+        if cfg!(windows) {
+            assert_eq!(failed(&sharing), Skip::Busy);
+        } else {
+            assert_ne!(failed(&sharing), Skip::Busy, "EPIPE on unix");
+        }
+    }
 }

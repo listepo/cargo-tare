@@ -61,6 +61,12 @@ pub fn flags(_path: &Path, meta: &Metadata) -> u32 {
 /// open handle, and both are `T21`; until then no probe can find a capability this module does
 /// not have, so none is run — not even a write test, because a capability of `NONE` is the
 /// answer either way.
+/// Not told here: finding a process's current dir takes reading its memory. Every quiet unit
+/// stays unsure.
+pub fn tool_cwds(_tools: &[&str]) -> Option<Vec<PathBuf>> {
+    None
+}
+
 pub fn caps(_dir: &Path) -> Caps {
     Caps::NONE
 }

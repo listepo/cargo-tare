@@ -61,7 +61,7 @@ it recovers 407 MiB rather than the full gigabyte.
 A second machine, a different workload, and the reason the table above has a twin: on btrfs the
 win does not show up where macOS shows it. Measured in a Linux VM (Ubuntu 24.04, 4 cores, a
 6 GiB btrfs loopback image mounted with default options) on an unshared copy of a real cargo
-target — `cargo-tare`'s own, 1.33 GiB, one checkout and therefore no family for dedupe to
+target — `dunnage`'s own, 1.33 GiB, one checkout and therefore no family for dedupe to
 compare against.
 
 | Pass | `du` before | `du` after | `du` delta | Free space delta | Wall clock |
@@ -120,6 +120,10 @@ Right after both passes, with nothing rebuilt in between, running the tool again
 pipeline run does not reach a fixed point. Nothing is lost by it — the next scheduled run picks
 them up — but a `run` that loops until it stops finding work would finish the job in one go.
 
+Since T25 `run` does loop: it repeats the passes on a group until a round applies nothing. Not
+measured again on this workspace yet; the fixture in `tests/settle.rs` is too small to show the
+second round at all.
+
 ## Across families
 
 `--across-families` compares every target under the roots instead of one repository at a time.
@@ -127,7 +131,7 @@ them up — but a `run` that loops until it stops finding work would finish the 
 the repository, not another worktree: its own `.git`, so its own family, holding the same
 dependencies built the same way — two unrelated projects, as far as the tool is concerned.
 
-This part was measured on **`cargo-tare` itself** rather than on that workspace: the machine had
+This part was measured on **`dunnage` itself** rather than on that workspace: the machine had
 10 GiB free at the time and three checkouts of it do not fit under the script's own
 free-space guard. The targets are therefore an order of magnitude smaller, and only the ratio is
 worth reading.
@@ -179,6 +183,87 @@ inside the crates (`tests/images/`, `res/`), reported as "not compressible enoug
 `git/checkouts` was 0 here — this machine has no git dependencies — so that half is covered by
 the fixture test only.
 
+## A content-addressed store: `GOCACHE`
+
+`--store` on a `GOCACHE` of its own: `go build std` (go 1.27.1, darwin/arm64) into an empty
+cache in a temp dir, every file's mtime moved back past the store's one-hour floor, then
+`dunnage run --store <cache>` from a release build. APFS.
+
+| | before | after | delta |
+| --- | --- | --- | --- |
+| `du` of the cache (2659 files) | 215.6 MiB | 63.6 MiB | **−152 MiB (−70.5%)** |
+| files compressed | | 368 of 2659 | the rest are under compress's 8 KiB floor |
+| wall time of the run | | 2.65 s | |
+
+Oracle, the store's own invariant: all 1131 data entries (`*-d`) still hash to their names under
+SHA-256, and `go build -x std` afterwards runs no `compile` step (0.55 s). `tests/store.rs`
+checks the same on a small module whenever `go` is installed.
+
+## A Go module cache
+
+A copy of this machine's `GOMODCACHE` (24 modules, 9,343 unpacked files; go 1.27.1,
+darwin/arm64) in a temp dir, `run --go` from a release build with `GOMODCACHE` and `GOCACHE`
+pointing at the copies. APFS.
+
+| | before | after | delta |
+| --- | --- | --- | --- |
+| `du` of the module cache | 145.9 MiB | 104.7 MiB | **−41 MiB (−28.3%)** |
+| files compressed | | 1288 of 1293 planned | the rest not compressible enough |
+
+The zips in `cache/download` (35 MiB of the total) are left alone, so the unpacked sources
+alone went from about 111 MiB to 70. Oracle: every module's `h1:` dir hash still equals the
+`.ziphash` `go` recorded when it unpacked it, every file keeps its mode and mtime and every dir
+its mode, and a module built against the copy rebuilds with no `compile` step and passes its
+tests. Without the lift, the same run skips every file with `PermissionDenied`.
+
+## A SwiftPM package
+
+swift-argument-parser (shallow clone of `main`), Swift 6.4 on macOS 27, APFS: `swift build` and
+`swift build -c release` into an empty `.build` in a temp dir, then
+`dunnage run --min-age 0 <package>` from a release build.
+
+| | before | after | delta |
+| --- | --- | --- | --- |
+| `du` of `.build` | 356.7 MiB | 157.4 MiB | **−199 MiB (−55.9%)** |
+| compress | | 1684 files, 199.2 MiB freed | |
+| dedupe | | 43 files, 1.1 MiB freed | debug and release share little |
+
+Oracle: `swift build -c release -v` afterwards runs no compile task, as it did not before the
+run, and the `math` example still adds. The largest share is `SDKExplicitPrecompiledModules` and
+`ModuleCache.noindex`, per package copies of SDK modules: more packages on one machine would
+give dedupe more to share, not measured yet.
+
+## A CMake project
+
+fmt (shallow clone of `master`, `6d71f74`), AppleClang on macOS 27, APFS: configured with
+`-DCMAKE_BUILD_TYPE=Debug -DFMT_TEST=ON`, Unix Makefiles, `cmake --build -j 8`, every file then
+moved back two days past the quiet tier's floor, and `dunnage run --min-age 0 build` from a
+release build.
+
+| | before | after | delta |
+| --- | --- | --- | --- |
+| `du` of `build` | 157.7 MiB | 52.3 MiB | **−105 MiB (−66.8%)** |
+| compress | | 158 files, 105.4 MiB freed | |
+| dedupe | | 16 files, 2.5 MiB freed | |
+
+Oracle: `cmake --build build -j 8` afterwards prints no `Building` or `Linking` line, and all 23
+tests pass under `ctest`.
+
+## Discovery in a monorepo
+
+A synthetic monorepo of 320,030 files: 60 × 50 source dirs of 100 empty `.rs` files each, and 10
+cargo targets of 2,000 artifacts at `src/m{0..9}/p0/target`, already settled by a first run.
+Release build, warm page cache, `hyperfine -N --warmup 1`.
+
+| re-run of a settled tree | mean |
+| --- | --- |
+| `run mono`, the roots walked (before, and `--rediscover` now) | 591 ± 34 ms |
+| `run` naming the 10 targets | 369 ± 39 ms |
+| `run mono`, build dirs from the last walk | **311 ± 8 ms** |
+
+The walk was about 40% of a run that had nothing left to do; the list takes it out, and a run
+over the whole tree costs what naming each target by hand did.
+
 ## sccache, for comparison
 
 | | clean build | target | cache |
@@ -190,7 +275,7 @@ the fixture test only.
 sccache answers a different question: it makes a *rebuild from scratch* about twice as fast, at
 the price of a slower first build and a 304 MiB cache of its own. It does not shrink a live
 target — its targets are smaller here only because a wrapper turns cargo's incremental
-compilation off. The two are complementary, and nothing in `cargo-tare` conflicts with it.
+compilation off. The two are complementary, and nothing in `dunnage` conflicts with it.
 
 ## What the defaults are worth
 
@@ -203,7 +288,12 @@ compilation off. The two are complementary, and nothing in `cargo-tare` conflict
 
 ## Not measured
 
-- **Seeded worktree** — `cargo tare seed` does not exist yet (T8).
+- **.NET.** The expected win is `bin/` copies of NuGet assemblies, and the NuGet cache here is
+  empty; nothing was downloaded to fill it. The two-app fixture of `tests/dotnet.rs` is a few
+  hundred KiB: it proves the passes safe (the next `dotnet build` copies and compiles nothing),
+  not what they are worth.
+
+- **Seeded worktree** — not measured yet.
 - **Shared `build-dir`** — cargo's `build.build-dir` is nightly-only (`-Z build-dir`); this
   machine builds on stable, where the key is ignored. T12's `advise` reports exactly that.
 - **One workspace, one machine.** Every number above is that one workspace on one Apple Silicon laptop.

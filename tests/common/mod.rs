@@ -10,8 +10,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
-use cargo_tare::engine::Report;
-use cargo_tare::model::{self, CARGO_LOCK_FILE};
+use dunnage::eco::cargo::{CARGO, LOCK_FILE};
+use dunnage::engine::Report;
+use dunnage::model;
 use tempfile::TempDir;
 
 const CARGO_TAG: &str = "Signature: 8a477f597d28d172789f06886806bc55\n\
@@ -22,7 +23,7 @@ const KIB: usize = 1024;
 pub const POLL: Duration = Duration::from_millis(20);
 const LOCK_RACE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Read by the fixture's build script and not declared to cargo, so it never makes a unit stale.
-pub const BUILD_SLEEP_ENV: &str = "TARE_FIXTURE_BUILD_SLEEP_SECS";
+pub const BUILD_SLEEP_ENV: &str = "DUNNAGE_FIXTURE_BUILD_SLEEP_SECS";
 /// Name of the fixture's binary inside a profile dir.
 pub const BIN: &str = "fx";
 
@@ -38,9 +39,9 @@ pub const BIN: &str = "fx";
 /// if !common::filesystem_can(|caps| caps.clone, "dedupe") { return; }
 /// ```
 #[must_use]
-pub fn filesystem_can(has: fn(&cargo_tare::sys::Caps) -> bool, what: &str) -> bool {
+pub fn filesystem_can(has: fn(&dunnage::sys::Caps) -> bool, what: &str) -> bool {
     let dir = std::env::temp_dir();
-    if has(&cargo_tare::sys::caps(&dir)) {
+    if has(&dunnage::sys::caps(&dir)) {
         return true;
     }
     eprintln!(
@@ -66,7 +67,7 @@ const FILES: &[(&str, &str)] = &[
         "use std::{env, fs, path::Path, thread, time::Duration};\n\
          fn main() {\n\
              println!(\"cargo::rerun-if-changed=build.rs\");\n\
-             if let Ok(secs) = env::var(\"TARE_FIXTURE_BUILD_SLEEP_SECS\") {\n\
+             if let Ok(secs) = env::var(\"DUNNAGE_FIXTURE_BUILD_SLEEP_SECS\") {\n\
                  thread::sleep(Duration::from_secs(secs.parse().unwrap()));\n\
              }\n\
              let out = Path::new(&env::var(\"OUT_DIR\").unwrap()).join(\"generated.rs\");\n\
@@ -199,15 +200,15 @@ pub fn stale_units_at(ws: &Path, target: &Path) -> Vec<String> {
 
 /// The binary under test, with a config home of its own: a test must never read, or depend on,
 /// the configuration of the machine it runs on.
-pub fn tare(config_home: &Path) -> assert_cmd::Command {
-    let mut cmd = assert_cmd::Command::new(env!("CARGO_BIN_EXE_cargo-tare"));
-    cmd.arg("tare").env("XDG_CONFIG_HOME", config_home);
+pub fn dunnage(config_home: &Path) -> assert_cmd::Command {
+    let mut cmd = assert_cmd::Command::new(env!("CARGO_BIN_EXE_dunnage"));
+    cmd.env("XDG_CONFIG_HOME", config_home);
     cmd
 }
 
 /// Bytes on disk under `dir`, every hardlinked inode once.
 pub fn allocated_bytes(dir: &Path) -> u64 {
-    let inodes = model::scan(dir).unwrap().inodes;
+    let inodes = model::scan(dir, &CARGO).unwrap().inodes;
     inodes.iter().map(|inode| inode.allocated).sum()
 }
 
@@ -240,12 +241,14 @@ pub fn run_unbusy(mut engine_run: impl FnMut() -> Report) -> Report {
     total
 }
 
-/// A cargo-tagged target with one profile dir of about `kib` KiB, last built `days` ago.
+/// A cargo-tagged target with one profile dir of about `kib` KiB, last built `days` ago, next to
+/// a `Cargo.toml` so its project reads as present.
 /// The age is the profile dir's own entries, which is what the inventory reads; the artifact
 /// inside `deps/` stays as young as the call, which is what the pass age floors read.
 pub fn fake_target(root: &Path, name: &str, kib: usize, days: u64) -> PathBuf {
     let target = root.join(name).join("target");
     fs::create_dir_all(&target).unwrap();
+    fs::write(root.join(name).join("Cargo.toml"), "").unwrap();
     fs::write(target.join("CACHEDIR.TAG"), CARGO_TAG).unwrap();
     fake_profile(&target, "debug", kib, days)
 }
@@ -254,7 +257,7 @@ pub fn fake_target(root: &Path, name: &str, kib: usize, days: u64) -> PathBuf {
 pub fn fake_profile(target: &Path, name: &str, kib: usize, days: u64) -> PathBuf {
     let profile = target.join(name);
     fs::create_dir_all(profile.join("deps")).unwrap();
-    File::create(profile.join(CARGO_LOCK_FILE)).unwrap();
+    File::create(profile.join(LOCK_FILE)).unwrap();
     fs::write(profile.join("deps/libx.rlib"), vec![1; kib * KIB]).unwrap();
     let built = SystemTime::now() - Duration::from_secs(days * SECS_PER_DAY);
     for entry in fs::read_dir(&profile).unwrap() {
@@ -262,4 +265,22 @@ pub fn fake_profile(target: &Path, name: &str, kib: usize, days: u64) -> PathBuf
         entry.set_modified(built).unwrap();
     }
     profile
+}
+
+/// `git <args>` in `dir`, with an identity of its own so no user config is needed; must succeed.
+pub fn git(dir: &Path, args: &[&str]) {
+    let status = Command::new("git")
+        .current_dir(dir)
+        .args([
+            "-c",
+            "user.name=dunnage",
+            "-c",
+            "user.email=dunnage@invalid",
+        ])
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?}");
 }

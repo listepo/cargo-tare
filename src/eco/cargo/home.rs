@@ -6,11 +6,13 @@
 //! What guards it is cargo's own `.package-cache`, which cargo holds while it fetches or
 //! extracts. `registry/cache` is left alone: `.crate` files are already compressed archives.
 
+use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+use crate::eco::{Ecosystem, Guard, Policy, Sharing};
 use crate::model;
 use crate::sys::COMPRESSED;
 
@@ -35,6 +37,41 @@ pub fn dirs(home: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The cargo home as a unit of work: its [`DIRS`] under one [`LOCK_FILE`]. Never found by a
+/// walk; a run names it.
+pub struct Home {
+    pub home: PathBuf,
+}
+
+impl Ecosystem for Home {
+    fn name(&self) -> &'static str {
+        "cargo home"
+    }
+
+    fn units(&self, _build_dir: &Path) -> io::Result<Vec<PathBuf>> {
+        Ok(dirs(&self.home))
+    }
+
+    fn guard(&self, _unit: &Path) -> Guard {
+        Guard::Shared(self.home.join(LOCK_FILE))
+    }
+
+    fn private(&self, name: &OsStr) -> bool {
+        super::CARGO.private(name)
+    }
+
+    fn policy(&self) -> Policy {
+        Self::POLICY
+    }
+}
+
+impl Home {
+    /// Cargo replaces a source dir instead of rewriting its files, so a hardlink is safe.
+    pub const POLICY: Policy = Policy {
+        share: Sharing::LinkSafe,
+    };
+}
+
 /// What `status` reports about the cargo home, measured the same way targets are.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Stats {
@@ -53,8 +90,11 @@ pub fn inspect(home: &Path) -> io::Result<Stats> {
         home: home.to_path_buf(),
         ..Stats::default()
     };
+    let adapter = Home {
+        home: home.to_path_buf(),
+    };
     for dir in dirs(home) {
-        for inode in model::scan(&dir)?.inodes {
+        for inode in model::scan(&dir, &adapter)?.inodes {
             stats.allocated_bytes += inode.allocated;
             stats.logical_bytes += inode.stamp.size;
             if inode.flags & COMPRESSED != 0 {

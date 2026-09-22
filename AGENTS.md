@@ -10,7 +10,7 @@ Notes for coding agents working in this repository.
 - If a directory above this repository contains an `AGENTS.md` or `CLAUDE.md`, follow it too. If it
   conflicts with this file, ask the creator.
 
-## What cargo-tare is
+## What dunnage is
 
 A cargo subcommand that shrinks live `target/` directories without slowing builds. Read
 `DESIGN.md` before touching code — the inode model, pass ordering and safety invariants there are
@@ -28,9 +28,11 @@ the contract. Measurements that justify the design are in `docs/research.md`.
 
 ## Commands
 
-- `just check` — `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`.
+- `just check` — `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+  `cargo check --lib --no-default-features` (the library without the CLI), `cargo test`.
   Run it before calling a task done.
-- `cargo run -- tare <args>` — cargo invokes the binary as `cargo-tare tare <args>`.
+- `cargo run -- <args>` — the binary is `dunnage`. `cargo dunnage <args>` works through a
+  `cargo-dunnage` link to it: cargo passes `dunnage` as the first argument and `main` drops it.
 
 ## Working agreements
 

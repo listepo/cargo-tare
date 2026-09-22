@@ -6,7 +6,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::engine::{Action, Pass};
-use crate::inventory::{self, ProfileInfo, Target};
+use crate::inventory::{ProfileInfo, Target};
 use crate::model::Profile;
 
 pub const NAME: &str = "evict";
@@ -156,10 +156,12 @@ impl Pass for Evict {
     }
 
     fn plan(&self, profiles: &[Profile]) -> Vec<Action> {
-        let locked = |dir: &PathBuf| profiles.iter().any(|profile| profile.dir == *dir);
         // Now that the lock is ours: a build that ran after the inventory keeps its profile.
         let evictable = |info: &ProfileInfo| {
-            locked(&info.dir) && inventory::last_built(&info.dir) == info.last_built_unix
+            profiles
+                .iter()
+                .find(|profile| profile.dir == info.dir)
+                .is_some_and(|profile| profile.last_used == info.last_built_unix)
         };
         let mut actions = Vec::new();
         let mut taken: Vec<&Path> = Vec::new();

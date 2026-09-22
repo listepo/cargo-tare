@@ -1,8 +1,9 @@
-# cargo-tare — design
+# dunnage — design
 
-Tare: the weight of the packaging, not the goods. `target/` is packaging.
+Dunnage: the loose packing stuffed around the cargo in a hold. `target/` is dunnage.
+The project was called `cargo-tare` until T42; `done.md` and `docs/spike/` keep the old name.
 
-`cargo-tare` shrinks Cargo build directories without slowing builds down, by combining several
+`dunnage` shrinks Cargo build directories without slowing builds down, by combining several
 independent approaches in one planner instead of chaining separate tools. Measurements behind
 every choice are in `docs/research.md`.
 
@@ -70,9 +71,14 @@ every choice are in `docs/research.md`.
 Ordering rule: delete first so lossless passes never hash or compress bytes that are about to
 disappear; lossless passes last so they see the final set of inodes.
 
-One run does not reach a fixed point: dedupe's clones are files compress never saw, so the next
-run finds them (46 actions on the benchmark workspace, `docs/bench.md`). Nothing is lost by it;
-a `run` that repeats until it finds nothing would finish in one go.
+One round of the passes does not always reach a fixed point: dedupe's clones are files compress
+never saw (46 actions for a second run on the benchmark workspace, `docs/bench.md`). So `run`
+repeats the rounds on a group, under the locks it already holds, until a round applies nothing
+(`Options::until_settled`, at most 8 rounds; the stop flag and the lock budget end it too). The
+test is "applied nothing", not "planned nothing": a group that is skipped for good — a file that
+will not compress, a hardlink from outside — is planned again by every round. Counts are summed
+over the rounds; a later round adds what it applied and what it skipped for the first time.
+`--dry-run` is one round, since it changes nothing a second one could see.
 
 ### Why one tool beats a chain of tools
 
@@ -102,7 +108,7 @@ compressed, smaller than 8 KB, or younger than `min-age`. Backend: the `applesau
 the member's mtime / mode / flags, then `rename(2)` over each path of the member's hardlink group.
 Clones are copy-on-write, so a later in-place write by rustc cannot leak into siblings.
 
-**seed** — `cargo tare seed --from <worktree> [<new-worktree>]`, or automatic source selection
+**seed** — `dunnage seed --from <worktree> [<new-worktree>]`, or automatic source selection
 inside the family (largest recently built target). Recursive clone of the target dir, excluding
 `incremental/` and lock files. Verified in T2: registry dependencies are fresh in the new
 worktree, only workspace members rebuild (their sources have new mtimes; their unit hashes are
@@ -137,13 +143,51 @@ for filesystems without reflinks.
 2. Re-check `(size, mtime)` of source and member immediately before replacing; any change aborts
    that group.
 3. Replacement is always temp-file + `rename` inside the same directory; a crash leaves either the
-   old or the new file, plus at most a `.tare-tmp-*` file that the next run removes.
+   old or the new file, plus at most a `.dunnage-tmp-*` file that the next run removes.
 4. mtime and mode of every replaced path are preserved. T2: a workspace-member rlib with a new
    mtime makes its dependents rebuild; registry artifacts are not mtime-checked, but the rule is
    applied to everything. BSD flags: the compressed flag follows the content (a clone of a
    compressed file is compressed); an inode carrying any other flag is skipped, not rewritten.
 5. Lossy passes never run unless enabled in config or by flag, and always support `--dry-run`.
 6. Never follow symlinks out of a target dir; never cross a device boundary.
+
+## Safety tier without a build lock
+
+Invariant 1 needs a lock the build holds while it writes. Cargo has one; Make, Ninja, MSBuild
+and Xcode hold nothing an outsider can test. An adapter says so with `Guard::Quiet`, and its
+units get a weaker tier, named as such in every report (`no build lock, weaker checks` in the
+table, `quiet` per group in `--json`):
+
+1. **Process check.** `Ecosystem::tools` names the build tool's processes. A unit is busy —
+   skipped, exit code 2 — when one of them has its current dir in the unit, below it, or in a
+   dir around it (`make` in the project root builds into `build/`); a process in a filesystem
+   root counts for nothing. macOS reads `ps` and `lsof`, Linux `/proc`. Where the check cannot
+   run — Windows, or an adapter that names no tool — the unit is *unsure*.
+2. **Age floor.** Files younger than `engine::QUIET_MIN_AGE` (one day) are left out of the model,
+   whatever a pass's own `min-age` says. A unit that had any is unsure.
+3. **Busy files.** A file found in use while it is replaced — `ETXTBSY`, `EBUSY`, a Windows
+   sharing or lock violation — is skipped as `Busy` and its unit is reported busy (exit code 2)
+   instead of failed. This holds for every guard.
+4. **Lossy passes** skip an unsure unit (`Unsure`); `RemoveTarget` skips a build dir holding
+   one.
+5. **Invariants 2–6 hold unchanged**, and one check is added for every guard: the source of a
+   clone is stamped again after the copy, so bytes written into it during the copy never
+   land under the member's names.
+6. Two runs of the tool itself — the daemon and a manual one — are kept apart by the session's
+   run lock, not by this tier.
+
+What the tier does **not** promise:
+
+- It does not close the race, it narrows it. A build that opens a member between the last
+  `(size, mtime)` check and the `rename` writes into the unlinked old inode, and those bytes are
+  lost; the next build rebuilds the file. `tests/quiet.rs` rewrites a file during a dedupe run
+  and ends with the newer bytes, which shows the window is small, not that it is closed.
+- A build of another user, in a container, on another machine over a network filesystem, or
+  under a process name the adapter does not list, is not seen.
+- A build that starts after the process check is not seen either; only the age floor and the
+  per-file checks stand between it and a lossy pass that is already removing.
+- A build tool that writes a file and leaves its mtime in the past (an extracted archive, a copy
+  that keeps times) gets past the age floor.
 
 **Freshness oracle** (the acceptance test for every lossless pass): build a fixture workspace, run
 the pass, then `cargo build --message-format=json` must report every unit as `fresh` and
@@ -178,7 +222,7 @@ and messages with paths through `assert_cmd` + `predicates` in `tests/cli.rs`.
 2. **Scan.** `model::scan` turns each locked profile dir into `Inode`s: `Stamp`
    (`dev`, `ino`, `size`, `mtime`), mode, flags, link count, allocated bytes and every path found.
    Symlinks are not followed, other devices are not entered, `.cargo-lock` is left out, and
-   `.tare-tmp-*` leftovers are collected and removed (not on `--dry-run`).
+   `.dunnage-tmp-*` leftovers are collected and removed (not on `--dry-run`).
 3. **Plan.** Each `Pass` gets the scanned profiles and returns `Action`s without touching the
    disk. A lossy pass is asked only when named in `Options::lossy`. After a pass that applied
    anything the profiles are rescanned, so the next pass sees the new inodes.
@@ -197,11 +241,68 @@ any stamp differs from the scan (`Changed`), or an I/O call fails (`Failed`). A 
 middle of a group leaves each path on the old or the new inode; both hold the same bytes, and the
 next run joins them again.
 
-`model::profile_dirs` maps a target dir to its profile dirs and refuses a dir whose
+`eco::cargo::profile_dirs` maps a target dir to its profile dirs and refuses a dir whose
 `CACHEDIR.TAG` was not written by cargo.
+
+## Adapter boundary (`src/eco/`)
+
+Everything that knows a build system by name is under `src/eco/`, the way everything that
+knows a platform is under `src/sys/`. The engine, the inode model, the index, `seed` and the
+generic passes ask through `eco::Ecosystem`: `claim` (is this dir a build dir), `owner` (the
+project it was built from), `build_dir` (where a project's build goes, for `seed`), `units`,
+`guard`, `private` (never scanned, never copied: `.cargo-lock`), `volatile` (left behind by
+`seed`: `incremental/`), `last_used` and `policy` (how dedupe may share). `eco::discover` is the
+one walk: every dir is offered to the registry in order, the first claim wins, a claimed dir is
+not entered and `.git` is never entered — so a CMake dir or a whole cargo target that a build
+script left inside a target is nobody's.
+
+The engine takes the adapter instead of a lock kind and locks what `guard` names:
+`Guard::Lock(file)` per unit, `Guard::Shared(file)` once for every unit under it, and nothing for
+`Guard::Quiet`, which gets the tier of "Safety tier without a build lock", or for
+`Guard::Immutable` ("Immutable stores"). `Held` (an embedding caller holds the build's lock, R8)
+is in the enum and refused until its task. `model::scan` records the unit's `last_used` at scan time, so
+`evict` and `incremental` re-check a unit's last build under its lock without asking cargo.
+Family and orphan status come from the owner's project, not from the build dir's parents; for
+cargo the owner is the dir above the target, so nothing changed.
+
+`eco::cargo::Cargo` is the only registered adapter; `eco::cargo::home::Home` is the cargo home,
+never discovered, named by a run, guarded by `Guard::Shared(.package-cache)`. Cargo's own passes
+and reports (`incremental`, `doc`, `toolchains`, `advise`, the home's stats) live under
+`src/eco/cargo/` too; the session still wires them by name, and the inventory still carries
+their cargo-shaped fields, until the status report is per ecosystem.
 
 After a group is replaced the engine calls `Pass::replaced(replace, new_stamp)`, so a pass can
 keep its own bookkeeping about the inode that now sits at the member's paths.
+
+`engine::run_with` takes an `Interrupt`: a stop flag and a deadline, looked at before every
+action and every compress batch. When either says so the run stops starting new work, releases
+its locks and says why in `Report::interrupted`. Every action is whole, so what it leaves behind
+is old or new, never half of either.
+
+## Session (`src/session.rs`)
+
+The run above one engine call, shared by every front end: the CLI and the daemon (`DESIGN.md`, "Daemon"), an
+embedding build system later (R8). `main.rs` only parses flags, merges them over the config into
+a `Request`, prints what the session returns and picks the exit code.
+
+- `Session::open(Settings)` — `Settings` names the hash index; the run lock `run.lock` sits
+  next to it. The library reads no environment and no config file on its own:
+  `session::default_index`, `config::default_path` and `cargo_home::path` resolve them for a
+  front end that wants the defaults.
+- `inventory` and `advise` only read and take no lock.
+- `plan` (a dry run) and `apply` check the `Request` (pass names, each lossy pass with its
+  threshold), read the inventory, then take the run lock, load the index, choose what the lossy
+  passes take, and run the engine once per group — per family, or one group across families —
+  plus the cargo home under its own lock. The index is saved before the lock is released.
+  `seed` takes the same lock. A second session gets `Error::RunLockHeld` and the CLI exits 2:
+  a manual run and the daemon coordinate through that file, without IPC.
+- `Control` steers a run from outside: an `Observer` hears each group before and after (the CLI
+  prints its table from there), `stop` ends the run between two actions, and `lock_budget`
+  bounds how long a group's build locks are held — a group out of budget lets go, so a build
+  waiting on its lock gets it, and is visited once more after the other groups; what is still
+  left then counts as busy. The CLI sets neither.
+- One `Error` type (`src/error.rs`). `anyhow` and `clap` belong to the binary behind the default
+  `cli` feature; `cargo check --lib --no-default-features` is part of `just check`.
 
 ## Dedupe pass and hash index (`src/dedupe.rs`, `src/index.rs`)
 
@@ -256,16 +357,21 @@ forward with it, which is the safe direction.
 On a filesystem that clones, none of this happens and `--link-artifacts` changes nothing: a
 clone is better and needs no permission.
 
-The **index** maps `(device, inode)` to `(size, mtime, hash, shared)`; a lookup with a different
+The **index** maps `(device, inode)` to `(size, mtime, hash, shared, seen)`; a lookup with a different
 size or mtime misses, so a rewritten file is rehashed and loses its shared mark. It is one flat
-file of fixed little-endian records behind a magic string (`~/.cache/cargo-tare/hashes-v1.bin`,
+file of fixed little-endian records behind a magic string (`~/.cache/dunnage/hashes-v1.bin`,
 `--index` to override), written through a temp file and `rename`, saved on `--dry-run` too. It is
-only a cache: a missing, truncated or foreign file reads as empty.
+only a cache: a missing, truncated or foreign file reads as empty, and so does one of an older
+format (the magic's digit), which the next save replaces. `seen` is when a run last hit the
+entry; on save, entries idle longer than `[index] idle-days` (default 30) are dropped. Those are
+the inodes of targets that were deleted or rebuilt, or of files no pass needs to hash any more,
+so the file does not grow for as long as the machine lives; dropping one still wanted costs one
+rehash of that file.
 
 Why the `shared` mark exists: APFS cannot be asked whether two files share blocks, and a clone is
 a different inode with equal content — without the mark every run would clone everything again
 and report savings that are not there. Known limits: two clusters shared by separate runs are not
-merged with each other; a target seeded by `cp -c` or `cargo tare seed` is unknown to the index
+merged with each other; a target seeded by `cp -c` or `dunnage seed` is unknown to the index
 and is cloned once more on its first run (T8 can register seeded inodes); losing the index costs
 one full rehash and one redundant round of cloning; like cargo itself, the index trusts
 `(size, mtime)`, so a file rewritten with the same size within the same nanosecond timestamp
@@ -310,12 +416,19 @@ Not a pass: it runs on its own, before there is anything to shrink.
   checkout registered under it (the repository itself and each `worktrees/<name>/gitdir`), looks
   in each one at the same relative path the destination has inside its own checkout — a
   workspace can sit anywhere in a repository — and takes the target built most recently.
+- **Every position.** In a checkout root with no `--from`, `positions` runs the shared walk
+  (`eco::discover`) over each sibling checkout and keeps the build dirs that sit at their
+  adapter's default place (`build_dir(owner) == dir`) and whose owner belongs to that sibling,
+  not to a worktree nested inside it. The same project path must be a dir in the destination
+  with no build dir yet: a project deleted or absent on this branch is left alone. Per position
+  the sibling that built it last wins, so two workspaces may come from two checkouts. All
+  positions are copied under one run lock. `worktree add` from a checkout root does the same.
 - **The copy is a clone.** `fs::copy` is `clonefile` on APFS, so the new target shares every
   block with the old one and the volume loses nothing. Dirs are recreated, symlinks are
-  recreated as symlinks, and `incremental/`, `.cargo-lock` and leftover `.tare-tmp-` files are
+  recreated as symlinks, and `incremental/`, `.cargo-lock` and leftover `.dunnage-tmp-` files are
   left behind: a cache of another checkout's build, a lock that is not ours, and rubbish.
 - **Under the source's locks.** Every profile dir of the source is locked with
-  `ProfileLock::try_acquire` for the length of the walk; one that a build holds is reported and
+  `ProfileLock::try_guard` on the adapter's guard for the length of the walk; one that a build holds is reported and
   skipped whole, so nothing half-written is ever copied. Exit code 2, as in `run`.
 - **Never into a live target.** A destination that already has a target dir is refused: seeding
   merges nothing.
@@ -326,13 +439,29 @@ Not a pass: it runs on its own, before there is anything to shrink.
 
 Known limits: the yield depends on what moved — units whose absolute path is part of their
 fingerprint (workspace members, path dependencies) are compiled again in the new checkout, and
-the test suite measures this against an empty target instead of assuming it; the fixture has no
-registry dependencies, which are exactly the units that keep their paths across worktrees, so
-the measured win is a floor; `--from` is not checked for being in the same family.
+the test suite measures this against an empty target instead of assuming it; the shared fixture
+has no registry dependencies, which are exactly the units that keep their paths across
+worktrees, so `tests/worktree.rs` builds a repository whose one dependency is vendored outside
+it; `--from` is not checked for being in the same family.
+
+`dunnage worktree add GIT ARGS...` (`Session::worktree_add`) is `git worktree add` followed by
+`seed`: it finds the new worktree by comparing `git worktree list --porcelain` before and after,
+seeds it at the path the current dir has inside its checkout, and reports git's failure without
+seeding. No built checkout to copy from is not an error: the worktree stays and nothing is
+copied.
 
 ## Orphans pass (`src/orphans.rs`)
 
-Lossy, so it runs only with `--lossy orphans`. No threshold: an orphan either is one or is not.
+Lossy, so it runs only with `--lossy orphans`. Two reasons (`orphans::Reason`), both printed:
+
+- **Checkout gone.** No threshold: an orphan either is one or is not. The rest of this section.
+- **Project gone.** The adapter's manifest (`Ecosystem::manifest`, `Cargo.toml` for cargo) is
+  missing from a checkout that is otherwise alive (`Target::project_gone`). A branch switch
+  produces the same picture as a deletion, so this reason needs a threshold of its own,
+  `--orphans-project-idle-days` / `[orphans] project-idle-days`, and the newest `last_used` of
+  the target's locked profiles must be at least that old; a profile with no `last_used` is not
+  idle. Without the threshold the target is only reported (`status`, `advise`). Under the lock
+  the manifest must still be missing: switching back to the branch keeps the target.
 
 - **What an orphan is.** A project whose `.git` file points at a worktree record
   (`<common dir>/worktrees/<name>`) that no longer exists — the repository was deleted, moved,
@@ -393,7 +522,7 @@ against sizes from the inventory, taken before compress and dedupe shrink the re
 dir that disappears between the inventory and the lock (a concurrent `cargo clean`) fails the
 run with the I/O error instead of being skipped. Thresholds are flags until the config (T10).
 
-## Incremental pass (`src/incremental.rs`)
+## Incremental pass (`src/eco/cargo/incremental.rs`)
 
 Lossy, so it runs only with `--lossy incremental --incremental-idle-days <N>`; the flags need
 each other, as `evict`'s do.
@@ -409,7 +538,7 @@ each other, as `evict`'s do.
 - **Selection is pure**, except for one `is_dir` check: a profile with no cache is never planned.
   A profile whose last build is unknown is never chosen, as in `evict`.
 - **Re-checked under the lock**: the cache goes only if the engine holds that profile's lock and
-  `inventory::last_built` still equals the inventory's reading. A build in between keeps it.
+  its last build, read under the lock, still equals the inventory's reading. A build in between keeps it.
 - **The engine removes, not the pass.** `Action::Remove` accepts a locked profile dir *or a dir
   inside one*, which is what makes this pass one selector instead of a second removal path.
   The profile dir itself stays, so its lock stays valid for the passes that follow.
@@ -421,6 +550,11 @@ are not read; a busy profile is skipped; `docs/research.md` measured `incrementa
 ## Inventory and `status` (`src/inventory.rs`)
 
 Read-only: takes no locks and changes nothing, so it is safe next to running builds.
+
+- **Place.** Each build dir carries its adapter, the checkout its project is in (the nearest dir
+  above holding a `.git`), its position inside that checkout, and its guard tier. `status`
+  groups by family, checkout and ecosystem and lists the five largest build dirs of each group
+  (`--all` every one); `--json` stays flat, one entry per build dir.
 
 - **Discovery.** Walk the roots without following symlinks; a dir whose `CACHEDIR.TAG` holds
   cargo's sentence is a target. A found target is not entered, so a target nested inside another
@@ -443,7 +577,7 @@ Read-only: takes no locks and changes nothing, so it is safe next to running bui
 runs alone), so locks are held only in targets that are compared with each other. Known limit:
 equal files in unrelated projects are not shared.
 
-## Advise command (`src/advise.rs`)
+## Advise command (`src/eco/cargo/advise.rs`)
 
 Read-only, and the only command that reads anything outside a target dir. Two lists:
 
@@ -469,7 +603,7 @@ Out of scope on purpose: `cargo-hakari` and `sccache` help with rebuild time, no
 of a live target, and nothing in a file says whether a workspace wants them — they stay in
 `docs/research.md` rather than in the output.
 
-## Doc pass (`src/doc.rs`)
+## Doc pass (`src/eco/cargo/doc.rs`)
 
 Lossy, so it runs only with `--lossy doc`, and the smallest pass there is: `<target>/doc` is what
 `cargo doc` writes from scratch and no build reads, which is why `cargo clean --doc` exists.
@@ -498,7 +632,7 @@ a minute of no builds anywhere. That is why it is opt-in and stays opt-in.
 
 Per-family `skip` still applies, because it is decided before the grouping.
 
-## Toolchain report (`src/toolchains.rs`)
+## Toolchain report (`src/eco/cargo/toolchains.rs`)
 
 A toolchain upgrade does not clean up after itself: cargo compiles every unit again under new
 hashes and never looks at what the old rustc produced. `cargo-sweep --installed` finds those by
@@ -516,7 +650,7 @@ This is why the task stops at a report: nothing can be deleted safely without th
 `status` prints a line per target and `advise` adds a note pointing at `cargo clean`. A target
 built by one rustc — the ordinary case — reports nothing at all.
 
-## Cargo home (`src/cargo_home.rs`)
+## Cargo home (`src/eco/cargo/home.rs`)
 
 The registry sources are the one big pile of compressible text outside the targets: every crate
 cargo builds is unpacked there once and then only read. `--cargo-home` treats it as one more
@@ -528,7 +662,7 @@ group, with two differences from a target.
   the archives are already compressed, and the index is cargo's own cache to invalidate.
 - **One lock for the whole group, not one per dir.** Cargo does not write `.cargo-lock` files
   there; what it holds while it fetches or extracts is `<home>/.package-cache`. So
-  `engine::run(..., Locks::Shared(&lock))` takes that one file lock and either all the dirs are
+  the `Home` adapter's `Guard::Shared` makes the engine take that one file lock and either all the dirs are
   ours or none are, which is also why a home cargo has never used (no `.package-cache`) is refused
   rather than locked into existence.
 
@@ -539,31 +673,212 @@ afterwards. The flag takes an optional value: `--cargo-home` alone resolves `CAR
 `$HOME/.cargo`. `status --cargo-home` reports the same dirs without touching them, and is opt-in
 because measuring them costs a second full walk.
 
-## CLI surface
+## Immutable stores (`src/eco/store.rs`)
+
+`--store DIR` names a content-addressed store: `GOCACHE`, `~/.cabal/store`, Zig's `o/`, dune's
+shared cache. Nothing is discovered. The `Store` adapter makes the whole dir one unit under
+`Guard::Immutable`:
+
+- No lock is taken and none exists. What makes compression safe anyway is the store's own rule:
+  a name never gets other bytes. An entry is written once — most tools write a temp file and
+  rename it in — so the only file a pass could race is one still being written, and
+  `engine::IMMUTABLE_MIN_AGE` (one hour) leaves those out of the model whatever `--min-age` says.
+- Only `compress` runs. Dedupe finds nothing where every name is a different content, and no
+  lossy pass ever runs: the unit is always unsure (`Skip::Unsure`), because the store's own tool
+  evicts from it.
+- The group is listed in `Report::quiet` like a `Guard::Quiet` unit.
+- `store::check` refuses, before the run lock is taken: what is not a dir; ccache and sccache (a
+  `ccache.conf`, a `CACHEDIR.TAG` naming ccache, or their default dir names), which compress their
+  own entries; and a dir inside a build dir a registered adapter claims or inside a cargo home,
+  whose files are rewritten under old names. A dir holding a build dir somewhere below is not
+  looked for — that would be a walk of the whole store.
+
+What it does not promise: a tool that rewrites a file under its old name — Zig's `h/`
+manifests, which it rewrites under its own lock — is not a content-addressed store, and naming
+it anyway races like `Guard::Quiet` does, with no process check. The harm is bounded by what a
+cache is: a manifest update lost to the race is a cache miss, not a wrong build. Name `o/` for
+Zig, not the whole cache.
+
+`tests/store.rs`: mtime, mode and content of every entry unchanged; a young entry left alone; no
+lossy pass; `check`'s refusals; the CLI with no root; and, where `go` is installed, a `GOCACHE`
+fixture whose data entries still hash to their names and whose rebuild compiles nothing.
+
+## Go module cache (`src/eco/go.rs`)
+
+`run --go` asks `go env GOCACHE GOMODCACHE` in the binary (the library runs no tools and reads
+no environment): `GOCACHE` goes to the stores, `GOMODCACHE` to `Request::go_modcache`, one more
+group after the stores.
+
+- **Units.** Every top-level dir but `cache/`: the unpacked `<path>@<version>` trees. `cache/`
+  holds the downloaded zips, already compressed, and VCS clones `go` updates under its own locks.
+  `go::check` refuses a dir without `cache/download`.
+- **Guard.** `Guard::Immutable`, as for a store: `go` unpacks into a temp dir and renames it into
+  place, and checks a module later by the hash of its files alone (`go mod verify`), which no
+  compression changes. Only `compress` runs, and files younger than an hour are left out.
+- **Read-only dirs.** `go` makes every module dir `0555`. The engine's replace needs a temp copy
+  next to the file and a `rename` over it, so on such a dir each file fails with
+  `PermissionDenied`, harmlessly — what `--store` on a module cache does. The adapter answers
+  `Ecosystem::lifts_read_only_dirs`, and `engine::apply_compress` then adds the owner write bit
+  to each read-only dir holding a member of the batch, and puts the recorded mode back once the
+  batch is swapped in. A mode that cannot be put back stops the run with the dir's path; a dir
+  that cannot be lifted is left as it is. A crash inside a batch leaves at most those dirs
+  writable, which `go` does not check. Only dir mtimes move, as with any `rename`. Unix only: a
+  read-only dir on Windows does not stop anyone from creating files in it.
+- **Spike.** On a copy of a real module cache (146 MiB, 24 modules), with no lifting every file
+  was skipped; with it, 105 MiB, every module's `h1:` dir hash still equal to its `.ziphash`,
+  and a module built against the copy rebuilt with no compile step.
+
+`tests/go.rs`: a fake read-only module cache keeps every mode, mtime and byte and gets no
+leftovers; an adapter that does not lift fails every file with `PermissionDenied` and changes
+nothing; `check`'s refusal; and, where `go` and `zip` are installed, `run --go` on a module
+served from a proxy dir, after which `go mod verify` is green and a build compiles nothing.
+
+## SwiftPM (`src/eco/swiftpm.rs`)
+
+- **Claim.** A dir named `.build` holding `workspace-state.json`, which every SwiftPM writes when
+  it resolves a package. The owner is the dir above it; the manifest `Package.swift`.
+- **Lock.** `swift build` (and `test`, `run`, `package`) takes TSCBasic's `FileLock` on the
+  scratch dir for the whole command: `flock` on `<temp dir>/<scratch path, / as _>.lock`, the
+  name cut to its last 255 bytes. Not `.build/.lock`, which only notes a pid. The temp dir is
+  `TMPDIR`, else the per-user one (`getconf DARWIN_USER_TEMP_DIR`), where Foundation looks when
+  `TMPDIR` is unset. The adapter names that file for the canonical scratch path as a
+  `Guard::Shared` over every unit; the engine creates it when a temp dir cleaner took it, as
+  `swift build` does. `tests/swiftpm.rs` holds it and watches `swift build` wait.
+- **Units.** The build outputs: `out/` (swiftbuild, the default build system) and
+  `<triple>/` dirs with a `debug` or `release` inside (the native one). Not `checkouts/` or
+  `repositories/`, which are dependency sources, and not `index-build/`, sourcekit-lsp's own
+  scratch dir under a lock of its own name.
+- **Private.** `out/CompilationCache.noindex`: mmapped databases, sparse, 12–25 GiB of logical
+  size each. `model::scan` leaves private dirs out whole, not only private files.
+- **Sharing.** Clones only: nothing says an output is never rewritten in place.
+- **No seed.** Absolute paths run through the build description and the swiftmodules.
+
+The oracle is `swift build -v`, whose output names compile tasks (`Compile`, `Compiling`) only
+when there are any; the plain output never does. A switch between debug and release recompiles
+by itself in swiftbuild, so the oracle builds the configuration that was built last.
+
+Known limit: a build started through a symlinked `--package-path`, or with `--scratch-path`,
+locks a file under a name derived from that other path, which the adapter cannot know.
+
+## .NET (`src/eco/dotnet.rs`)
+
+- **Claim.** `obj/` holding `project.assets.json`, which every restore writes, and `bin/` next
+  to such an `obj/`. Each dir is one unit: MSBuild writes all of it in one build and nothing
+  guards a part of it. The owner is the project dir; the manifest the project file restore
+  recorded as `obj/<project file>.nuget.dgspec.json`, since one dir may hold several.
+- **No lock.** `Guard::Quiet`: the one-day floor, and `dotnet`, `MSBuild` and `VBCSCompiler`
+  as the tools whose current dir makes a unit busy. Worker nodes and the compiler server stay
+  alive after a build and keep their project busy until they exit; that is the safe side.
+- **Clones only.** MSBuild's `Copy` overwrites a destination in place, which is how its own
+  hardlink option corrupts the NuGet cache (dotnet/msbuild#8273). `Sharing::ClonesOnly` makes
+  `--link-artifacts` a no-op here, whatever the filesystem.
+- **No seed.** Outputs carry absolute paths (`*.FileListAbsolute.txt`, `project.assets.json`).
+
+The oracle is `dotnet build -v:n`: every `CoreCompile` it reaches is skipped as up to date and
+no `Copy` task copies a file. `CoreCompileInputs.cache` survives a same-content, same-mtime
+replacement: the build after dedupe and compress is a no-op.
+
+Not found yet: `UseArtifactsOutput`, whose `artifacts/obj/<project>` has no project file next to
+it. A .NET 10 SDK with missing workload manifests fails every build, the case on the machine
+the tests were written on; the tests pin a 9.0 SDK with `global.json`.
+
+## CMake (`src/eco/cmake.rs`)
+
+- **Claim.** A dir holding `CMakeCache.txt`, whatever the generator. The whole dir is one unit.
+  The owner is the source dir the cache records as `CMAKE_HOME_DIRECTORY`; the manifest is its
+  `CMakeLists.txt`. A build dir sits anywhere, so its place says nothing.
+- **Never in-source.** A dir whose source dir is itself or lies inside it is not claimed,
+  compared as real paths: a lossy pass removing that unit would remove the sources.
+- **No lock.** `Guard::Quiet`, with `cmake`, `ninja`, `make`, `gmake` and `ctest` as the tools.
+- **Clones only.** `ar` may update an archive in place.
+- **No seed.** The cache and the generated build files hold absolute paths.
+
+The oracle is `cmake --build` with the Makefiles generator: after compress and dedupe it prints
+no `Building` and no `Linking` line, and the binaries still run; a new mtime on a source makes it
+build again. Ninja and Meson build dirs are T32.1.
+
+## Known build dirs (`src/known.rs`)
+
+In a monorepo the walk for build dirs costs the source tree, not the build dirs (`docs/bench.md`,
+"Discovery in a monorepo"). `Session` keeps the last walk in `build-dirs-v1.json` next to the
+index: the canonical roots, when they were walked, each root's own mtime, and every build dir
+with its adapter's name. The next run uses the list when the roots are the same, the list is
+younger than `[discovery] every-secs` (1 h), and no root's mtime moved; otherwise it walks and
+writes the list back through a temp file and a rename.
+
+- **Every entry is claimed again.** A listed dir goes through its adapter's `claim`, so a removed
+  build dir drops out without a walk, and a dir that stopped being one is not worked on.
+- **A new build dir waits.** One created below a root's top level does not move the root's mtime:
+  it is seen at the next walk. `run` says when it used the list, and `--rediscover` walks now.
+  The daemon sets `rediscover` for the run after each of its own walks, so a unit it found is
+  never marked visited by a run that did not see it.
+- **Best effort.** A list that cannot be read or written costs a walk, never a failure. A
+  session without an index path walks every time.
+- **Not a file-system watcher.** Watching the tree is the `notify` question in `ideas.md`.
+
+## Daemon (`src/daemon/`)
+
+In the binary, not the library: only a process has triggers. Every change it makes is one
+`Session::apply` of `Request::from_config`, so it runs exactly what a scheduled `run` with no
+flags would, lossy passes included only when the config names them.
+
+- **Triggers: timers only.** A slow one re-runs `eco::discover`; each look reads every known
+  unit's `last_used`. A filesystem watcher (`notify`) waits for the creator's word on the
+  dependency.
+- **Due times.** A unit is pending when built since its last visit, and due at its last build
+  plus `min-age` — `QUIET_MIN_AGE` at least for `Guard::Quiet` units. Any due unit starts one run
+  over all the roots: dedupe and the caps need the families whole. After it, a unit is visited
+  unless it was busy or a group let go early; the report does not say which units an
+  interrupted group reached. The daemon sleeps until the next due time still ahead, capped by
+  the interval, so a busy unit waits for the interval rather than spinning.
+- **A build never waits long.** `Control::lock_budget` is 2 s by default: a group lets go of
+  build locks after that, and is visited once more. A held lock is `try_lock`, so the daemon never
+  waits for a build either.
+- **State.** `daemon.json` next to the index, written to a temp file and renamed. It keeps the
+  visit of each unit across restarts; `daemon status` prints it.
+- **Service units.** `daemon install` writes a launchd agent (`Nice`, `LowPriorityIO`,
+  `ProcessType Background`, `ThrottleInterval`) or a systemd user unit (`Nice=19`, idle CPU and
+  I/O scheduling, `Restart=on-failure`), with this binary's absolute path, and starts it through
+  `launchctl bootstrap` / `systemctl --user enable --now`. No test writes one: it would load a
+  real agent. `--print` is what the tests check.
+- **No signal handling.** It needs a crate or `unsafe`; every action is whole, so a killed run
+  leaves at most temp files the next run removes.
+
 
 ```
-cargo tare status [--json] [--cargo-home [DIR]] [ROOT]...  # inventory, families, potential
+dunnage status [--json] [--all] [--cargo-home [DIR]] [ROOT]...  # inventory, families, potential
                                                           # savings; read-only
-cargo tare run [--dry-run] [--lossy <PASS>]... [--index <FILE>] [<ROOT>]...
+dunnage run [--dry-run] [--lossy <PASS>]... [--index <FILE>] [<ROOT>]...
                [--config <FILE>] [--json]          # file: see below; json: the report as data
                [--cargo-home [DIR]]                # compress the registry sources too
+               [--store <DIR>]... [--go]           # content-addressed stores; Go's caches
                [--evict-idle-days <N>] [--evict-max-total-gib <N>]   # with --lossy evict
                [--evict-whole-target]                                # with --lossy evict
                [--incremental-idle-days <N>]        # with --lossy incremental
-                                                    # --lossy orphans: no threshold
+               [--orphans-project-idle-days <N>]    # with --lossy orphans: projects gone
                [--pass <PASS>]... [--min-age <SECS>] [--min-size <BYTES>]  # benchmarks
-cargo tare seed [--from <DIR>] [--dry-run] [--index <FILE>] [<DIR>]  # clone a sibling's target
-cargo tare advise [--json] [ROOT]...  # what makes these targets bigger than they need to be
+               [--rediscover]                       # walk the roots even if the list holds
+dunnage seed [--from <DIR>] [--dry-run] [--index <FILE>] [<DIR>]  # clone a sibling's target
+dunnage worktree add [--dry-run] [--index <FILE>] <GIT ARGS>... # git worktree add, then seed
+dunnage advise [--json] [ROOT]...  # what makes these targets bigger than they need to be
+dunnage daemon run [--config <FILE>] [--index <FILE>] [--once]  # the passes, as dirs go cold
+dunnage daemon install [--config <FILE>] [--index <FILE>] [--print] | remove | status [--json]
 ```
 
-Config (`src/config.rs`): `$XDG_CONFIG_HOME/cargo-tare/config.toml`, else
-`~/.config/cargo-tare/config.toml` — `roots`, `lossy`, `min-age`, `min-size`,
-`[evict] idle-days / max-total-gib / whole-target`, `[incremental] idle-days`, `[family."<dir>"] skip`. Keys are
+Config (`src/config.rs`): `$XDG_CONFIG_HOME/dunnage/config.toml`, else
+`~/.config/dunnage/config.toml` — `roots`, `lossy`, `min-age`, `min-size`,
+`[evict] idle-days / max-total-gib / whole-target`, `[incremental] idle-days`, `[index] idle-days`, `[orphans] project-idle-days`,
+`[discovery] every-secs`, `[daemon] interval-secs / rediscover-secs / lock-budget-secs`,
+`[family."<dir>"] skip / skip-paths / ecosystems`. Keys are
 kebab-case and unknown ones are an error: a typo that silently does nothing is worse than a stop.
-A flag always wins over the file, and a file named with `--config` must exist. Only `skip` is per
-family, because the other thresholds are decided over everything under the roots at once.
+A flag always wins over the file, and a file named with `--config` must exist. Per family there
+is only what to leave alone — `skip`, `skip-paths` (positions in a checkout, as whole-component
+prefixes, so no glob crate) and `ecosystems` — because the thresholds are decided over
+everything under the roots at once. `Request::keeps` drops a skipped build dir from the
+inventory before any pass chooses, so it is neither worked on nor counted toward the `evict` cap.
 
-Exit codes: `0` done, `1` failed, `2` a profile dir was left alone because a build held its lock.
+Exit codes: `0` done, `1` failed, `2` a profile dir was left alone because a build held its lock,
+or another run of the tool holds the run lock.
 A scheduled run needs that difference; anything else it wants is in `--json`, which prints the
 groups, the busy dirs, the per-pass counts, every removal with its reason and every skip.
 

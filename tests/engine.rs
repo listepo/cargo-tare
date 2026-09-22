@@ -5,10 +5,16 @@ use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
-use cargo_tare::engine::{self, Action, Locks, Options, Pass, Replace, Report, Share, Skip};
-use cargo_tare::model::{self, CARGO_LOCK_FILE, Profile, TMP_PREFIX};
+use dunnage::eco::cargo;
+use dunnage::eco::cargo::{CARGO, LOCK_FILE};
+use dunnage::engine::{
+    self, Action, Interrupt, Interrupted, Options, Pass, Replace, Report, Share, Skip,
+};
+use dunnage::model::Stamp;
+use dunnage::model::{self, Profile, TMP_PREFIX};
 use tempfile::TempDir;
 
 mod common;
@@ -60,7 +66,7 @@ fn share_by_name(profiles: &[Profile], source: &str, member: &str, how: Share) -
 }
 
 fn run(profile: &Path, passes: &[&dyn Pass], opts: &Options) -> Report {
-    run_unbusy(|| engine::run(&[profile.to_path_buf()], passes, opts, Locks::PerDir).unwrap())
+    run_unbusy(|| engine::run(&[profile.to_path_buf()], passes, opts, &CARGO).unwrap())
 }
 
 fn run_replace(profile: &Path, opts: &Options) -> Report {
@@ -76,7 +82,7 @@ fn profile() -> (TempDir, PathBuf) {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path().canonicalize().unwrap().join("debug");
     fs::create_dir_all(dir.join("deps")).unwrap();
-    File::create(dir.join(CARGO_LOCK_FILE)).unwrap();
+    File::create(dir.join(LOCK_FILE)).unwrap();
     fs::write(dir.join("canon"), CONTENT).unwrap();
     let member = dir.join("deps/member");
     fs::write(&member, CONTENT).unwrap();
@@ -116,7 +122,7 @@ fn replaces_whole_hardlink_group_and_keeps_mtime_and_mode() {
     assert_eq!(meta.modified().unwrap(), SystemTime::UNIX_EPOCH + OLD_MTIME);
     assert_eq!(meta.mode() & 0o7777, MEMBER_MODE);
     assert_eq!(fs::read(&member).unwrap(), CONTENT);
-    assert!(model::scan(&dir).unwrap().stale_temps.is_empty());
+    assert!(model::scan(&dir, &CARGO).unwrap().stale_temps.is_empty());
 }
 
 /// The link fallback (`T22`), which is the only way to share on a filesystem without
@@ -155,7 +161,7 @@ fn a_link_puts_the_group_on_one_inode_and_keeps_the_later_mtime() {
         newer,
         "the shared inode keeps the later time, for both names"
     );
-    assert!(model::scan(&dir).unwrap().stale_temps.is_empty());
+    assert!(model::scan(&dir, &CARGO).unwrap().stale_temps.is_empty());
 }
 
 /// Modes are not negotiable: the fixture's member is `0o640` and `canon` is not, and one inode
@@ -183,7 +189,7 @@ fn busy_profile_is_skipped_untouched() {
     let (_tmp, dir) = profile();
     let stale = dir.join(format!("{TMP_PREFIX}crashed"));
     fs::write(&stale, b"x").unwrap();
-    let held = File::open(dir.join(CARGO_LOCK_FILE)).unwrap();
+    let held = File::open(dir.join(LOCK_FILE)).unwrap();
     held.lock().unwrap();
     let old_ino = ino(&dir.join("deps/member"));
 
@@ -328,7 +334,7 @@ fn scan_does_not_follow_symlinks() {
     symlink(&outside, dir.join("link-dir")).unwrap();
     symlink(outside.join("secret"), dir.join("link-file")).unwrap();
 
-    let scan = model::scan(&dir).unwrap();
+    let scan = model::scan(&dir, &CARGO).unwrap();
 
     let names: Vec<_> = scan
         .inodes
@@ -343,15 +349,15 @@ fn scan_does_not_follow_symlinks() {
 fn profile_dirs_refuses_a_dir_cargo_did_not_tag() {
     let (_tmp, dir) = profile();
     let target = dir.parent().unwrap();
-    assert!(model::profile_dirs(target).is_err(), "no tag at all");
+    assert!(cargo::profile_dirs(target).is_err(), "no tag at all");
     fs::write(
         target.join("CACHEDIR.TAG"),
         "Signature: 8a477f597d28d172789f06886806bc55",
     )
     .unwrap();
-    assert!(model::profile_dirs(target).is_err(), "someone else's tag");
+    assert!(cargo::profile_dirs(target).is_err(), "someone else's tag");
     fs::write(target.join("CACHEDIR.TAG"), "# tag created by cargo.").unwrap();
-    assert_eq!(model::profile_dirs(target).unwrap(), [dir.as_path()]);
+    assert_eq!(cargo::profile_dirs(target).unwrap(), [dir.as_path()]);
 }
 
 // --- a real cargo build ---
@@ -383,7 +389,7 @@ fn running_build_is_not_disturbed_and_replaced_artifacts_stay_fresh() {
             std::slice::from_ref(&profile),
             &[],
             &Options::default(),
-            Locks::PerDir,
+            &CARGO,
         ) {
             seen_busy = !report.busy.is_empty();
         }
@@ -392,7 +398,7 @@ fn running_build_is_not_disturbed_and_replaced_artifacts_stay_fresh() {
     assert!(build.wait().unwrap().success());
     assert!(seen_busy, "never saw cargo holding the lock");
     // Cargo's real tag and lock file are what `profile_dirs` expects.
-    assert_eq!(model::profile_dirs(&target).unwrap(), [profile.as_path()]);
+    assert_eq!(cargo::profile_dirs(&target).unwrap(), [profile.as_path()]);
     fixture.build(&target);
 
     // Freshness: replace the final binary's hardlink group (`fx` and `deps/fx-<hash>`).
@@ -407,4 +413,155 @@ fn running_build_is_not_disturbed_and_replaced_artifacts_stay_fresh() {
     assert_ne!(ino(&profile.join(BIN)), old_ino);
 
     fixture.assert_fresh(&target);
+}
+
+/// Replaces `member` and `second` with clones of `canon`, and raises `stop` after the first.
+struct StopAfterOne<'a> {
+    stop: &'a AtomicBool,
+}
+
+impl Pass for StopAfterOne<'_> {
+    fn name(&self) -> &'static str {
+        "test"
+    }
+    fn plan(&self, profiles: &[Profile]) -> Vec<Action> {
+        let mut actions = replace_by_name(profiles, "canon", "member");
+        actions.extend(replace_by_name(profiles, "canon", "second"));
+        actions
+    }
+    fn replaced(&self, _replace: &Replace, _new: &Stamp) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+#[test]
+fn a_stop_raised_mid_run_leaves_every_file_old_or_new() {
+    let (_tmp, dir) = profile();
+    let second = dir.join("deps/second");
+    fs::write(&second, CONTENT).unwrap();
+    let (member_ino, second_ino) = (ino(&dir.join("deps/member")), ino(&second));
+    let stop = AtomicBool::new(false);
+    let pass = StopAfterOne { stop: &stop };
+    let interrupt = Interrupt {
+        stop: Some(&stop),
+        ..Interrupt::default()
+    };
+
+    let report = run_unbusy(|| {
+        engine::run_with(
+            std::slice::from_ref(&dir),
+            &[&pass],
+            &Options::default(),
+            &CARGO,
+            interrupt,
+        )
+        .unwrap()
+    });
+
+    assert_eq!(report.interrupted, Some(Interrupted::Stopped));
+    assert_eq!(report.passes[0].applied, 1, "{report:?}");
+    // The first file is new, the second is the old one, and both hold the same bytes.
+    assert_ne!(ino(&dir.join("deps/member")), member_ino);
+    assert_eq!(ino(&second), second_ino);
+    assert_eq!(fs::read(dir.join("deps/member")).unwrap(), CONTENT);
+    assert_eq!(fs::read(&second).unwrap(), CONTENT);
+    let leftovers = fs::read_dir(dir.join("deps"))
+        .unwrap()
+        .filter(|entry| {
+            let name = entry.as_ref().unwrap().file_name();
+            name.to_string_lossy().starts_with(TMP_PREFIX)
+        })
+        .count();
+    assert_eq!(leftovers, 0, "no temp file is left behind");
+}
+
+/// Whether `a` and `b` were scanned as one inode.
+fn one_inode(profiles: &[Profile], a: &str, b: &str) -> bool {
+    profiles.iter().flat_map(|p| &p.inodes).any(|inode| {
+        let named = |name: &str| inode.paths.iter().any(|p| p.file_name().unwrap() == name);
+        named(a) && named(b)
+    })
+}
+
+/// Links `second` to `canon` only once `member` is linked to it: work the second pass of a
+/// round makes for the first pass of the next.
+fn chained_passes() -> (impl Pass, impl Pass) {
+    let after = FnPass {
+        lossy: false,
+        plan: |p: &[Profile]| {
+            if one_inode(p, "canon", "member") && !one_inode(p, "canon", "second") {
+                share_by_name(p, "canon", "second", Share::Link)
+            } else {
+                Vec::new()
+            }
+        },
+    };
+    let first = FnPass {
+        lossy: false,
+        plan: |p: &[Profile]| {
+            if one_inode(p, "canon", "member") {
+                Vec::new()
+            } else {
+                share_by_name(p, "canon", "member", Share::Link)
+            }
+        },
+    };
+    (after, first)
+}
+
+/// A profile dir with three equal files of one mode, each its own inode.
+fn three_equal_files() -> (TempDir, PathBuf) {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().canonicalize().unwrap().join("debug");
+    fs::create_dir_all(&dir).unwrap();
+    File::create(dir.join(LOCK_FILE)).unwrap();
+    for name in ["canon", "member", "second"] {
+        fs::write(dir.join(name), CONTENT).unwrap();
+    }
+    (tmp, dir)
+}
+
+#[test]
+fn until_settled_runs_again_while_a_round_applies_anything() {
+    let (_tmp, dir) = three_equal_files();
+    let (after, first) = chained_passes();
+    let opts = Options {
+        until_settled: true,
+        ..Options::default()
+    };
+
+    let report = run(&dir, &[&after, &first], &opts);
+
+    assert_eq!(ino(&dir.join("second")), ino(&dir.join("canon")));
+    assert_eq!(report.rounds, 3, "two that apply, one that finds nothing");
+    let applied: Vec<_> = report
+        .passes
+        .iter()
+        .map(|p| (p.planned, p.applied))
+        .collect();
+    assert_eq!(applied, [(1, 1), (1, 1)], "summed over the rounds");
+}
+
+#[test]
+fn one_round_without_until_settled_and_on_a_dry_run() {
+    for opts in [
+        Options::default(),
+        Options {
+            until_settled: true,
+            dry_run: true,
+            ..Options::default()
+        },
+    ] {
+        let (_tmp, dir) = three_equal_files();
+        let (after, first) = chained_passes();
+
+        let report = run(&dir, &[&after, &first], &opts);
+
+        assert_eq!(report.rounds, 1, "{opts:?}");
+        assert_ne!(
+            ino(&dir.join("second")),
+            ino(&dir.join("canon")),
+            "{opts:?}"
+        );
+    }
 }
