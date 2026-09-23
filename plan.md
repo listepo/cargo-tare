@@ -10,7 +10,7 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
-| T43 | in progress | P1 | 3 | 70% | Claude Code / opus-5.5 |
+| T43 | in progress | P1 | 3 | 85% | Claude Code / opus-5.5 |
 | T24 | todo | P1 | 3 | 0% | |
 | T21 | todo | P2 | 5 | 0% | |
 | T30.1 | todo | P2 | 3 | 0% | |

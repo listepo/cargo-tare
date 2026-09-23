@@ -48,5 +48,7 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # Into the toolchain rust-toolchain.toml pins, not the default one (see the Justfile).
-      - run: rustup target add --toolchain "$(rustc --version --verbose | sed -n 's/^release: //p')" x86_64-pc-windows-msvc
+      - run: |
+          rustup target add --toolchain "$(rustc --version --verbose | sed -n 's/^release: //p')" \
+            x86_64-pc-windows-msvc
       - run: just check-cross
