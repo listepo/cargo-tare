@@ -5,6 +5,9 @@ edition = "2024"
 rust-version = "1.98"
 description = "Shrink Cargo target directories without slowing builds"
 publish = false
+# cargo-dist hosts releases on this repository; the Homebrew formula links the homepage (T43).
+repository = "https://github.com/listepo/dunnage"
+homepage = "https://github.com/listepo/dunnage"
 
 # The binary is a front end; the library builds without its dependencies, so a build system
 # can embed it (`cargo check --lib --no-default-features`).
@@ -40,3 +43,13 @@ assert_cmd = "2.2.2"
 predicates = "3.1.4"
 tempfile = "3.27.0"
 trycmd = "1.2.1"
+
+# `publish = false` hides the binary from cargo-dist; this puts it back (T43).
+[package.metadata.dist]
+dist = true
+
+# The profile cargo-dist builds release archives with (T43).
+[profile.dist]
+inherits = "release"
+lto = "thin"
+codegen-units = 1 # the shipped binary is built once; trade build time for size

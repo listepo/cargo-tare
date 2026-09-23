@@ -10,8 +10,12 @@ too slow, see `DESIGN.md`).
 | mise | brew / curl, then `mise install` | Pinned tool versions | https://github.com/jdx/mise |
 | rustc | mise (pin in `rust-toolchain.toml`, mirrored in `mise.toml`) | Build | https://github.com/rust-lang/rust |
 | cargo | mise (with rust) | Build, and the tool under study | https://github.com/rust-lang/cargo |
-| just | global (cargo install / brew) | `just check`: fmt, clippy, test | https://github.com/casey/just |
+| just | mise (pin in `mise.toml`) | `just check`: fmt, clippy, test; the release recipes | https://github.com/casey/just |
 | rust-std for `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc` | `rustup target add --toolchain $(rustc --version --verbose \| sed -n 's/^release: //p') <triple>` — without `--toolchain` rustup installs into the *default* toolchain, not the one `rust-toolchain.toml` pins, and the cross build then fails with `E0463: can't find crate for core` | `just check-cross`: the other two platforms must compile | https://github.com/rust-lang/rust |
+| git-cliff | mise (pin in `mise.toml`) | `CHANGELOG.md` from commit subjects: `just changelog`, `scripts/release.sh`, the release pull request | https://github.com/orhun/git-cliff |
+| cargo-dist | mise, on demand (`scripts/dist-generate.sh` runs the `cargo-dist-version` of `dist-workspace.toml`) | Generates `release.yml`; builds, signs, tags and publishes a release | https://github.com/axodotdev/cargo-dist |
+| release-plz | GitHub Action (`release-plz.yml`) | Keeps the `release: vX.Y.Z` pull request open | https://github.com/release-plz/release-plz |
+| gh | global (brew) | `scripts/release.sh` dispatches `release.yml` | https://github.com/cli/cli |
 | hyperfine | global (brew; mise ships an x86_64 build that will not run on arm64) | `scripts/bench.sh`: build timings | https://github.com/sharkdp/hyperfine |
 | sccache | global (mise) | `scripts/bench.sh`: the variant the tool is compared against | https://github.com/mozilla/sccache |
 | swift | global (Xcode), optional | `tests/swiftpm.rs`: the lock and rebuild oracles for SwiftPM, skipped without it; `docs/bench.md` numbers | https://github.com/swiftlang/swift |
@@ -39,3 +43,13 @@ too slow, see `DESIGN.md`).
 | trycmd | local (dev) | https://github.com/assert-rs/snapbox | Full CLI output cases in `tests/cmd/` |
 | assert_cmd | local (dev) | https://github.com/assert-rs/assert_cmd | Exit codes of the binary |
 | predicates | local (dev) | https://github.com/assert-rs/predicates-rs | Matchers for `assert_cmd` |
+
+## GitHub Actions
+
+| Action | Where | Source | Why here |
+| --- | --- | --- | --- |
+| actions/checkout | `ci.yml`, `verify.yml`, `bump.yml`, `release-plz.yml`, `release.yml` | https://github.com/actions/checkout | Check out the repository |
+| jdx/mise-action | `verify.yml`, `bump.yml`, `release-plz.yml` | https://github.com/jdx/mise-action | The tools `mise.toml` pins |
+| Swatinem/rust-cache | `verify.yml`, `bump.yml`, `.github/build-setup.yml` | https://github.com/Swatinem/rust-cache | Cargo cache between runs |
+| release-plz/action | `release-plz.yml` | https://github.com/release-plz/action | The release pull request |
+| actions/upload-artifact, actions/download-artifact | `release.yml` (generated) | https://github.com/actions/upload-artifact | Hand the built archives between dist jobs |

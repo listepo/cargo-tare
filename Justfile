@@ -3,7 +3,7 @@ check:
     cargo fmt --check
     cargo clippy --all-targets -- -D warnings
     cargo check --lib --no-default-features
-    cargo test
+    cargo test --no-fail-fast
 
 # The other two platforms compile. Only `src/sys/` differs between them, and only a build says
 # so; the tests still run where the machine is. Needs the std of both targets, in the toolchain
@@ -22,3 +22,17 @@ bench workspace:
 # The same for the cargo home: it works on a clone of it, never on ~/.cargo itself.
 bench-home:
     scripts/bench-cargo-home.sh
+
+# Regenerate .github/workflows/release.yml from dist-workspace.toml (T43). Never hand-edit
+# release.yml; change dist-workspace.toml or .github/build-setup.yml and run this.
+dist-generate:
+    scripts/dist-generate.sh
+
+# Release the version in Cargo.toml, or the next one if that is already tagged (T43). The same
+# script the Bump workflow runs, so local and CI cannot disagree. Preview: `just release patch --dry-run`.
+release level="patch" *flags:
+    scripts/release.sh {{level}} {{flags}}
+
+# Regenerate CHANGELOG.md from git history (git-cliff, config in cliff.toml).
+changelog:
+    git-cliff -o CHANGELOG.md

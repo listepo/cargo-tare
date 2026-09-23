@@ -267,20 +267,44 @@ fn after_compress_and_dedupe_swift_builds_nothing_and_the_binary_runs() {
     let ran = swift(&package, &["run", "--skip-build", "app"]);
     assert!(ran.status.success(), "{ran:?}");
     assert!(String::from_utf8_lossy(&ran.stdout).contains("Hello, world!"));
-    // And the oracle can say no: a new mtime on a source is enough for a compile.
-    File::options()
-        .write(true)
-        .open(package.join("Sources/app/Words.swift"))
-        .unwrap()
-        .set_modified(std::time::SystemTime::now())
-        .unwrap();
+    // And the oracle can say no: an edited source is compiled.
+    let words = package.join("Sources/app/Words.swift");
+    let mut source = fs::read_to_string(&words).unwrap();
+    source.push_str("let edited = \"a new word\"\n");
+    fs::write(&words, source).unwrap();
     assert!(compiles(&package));
 }
 
-/// Whether `swift build` compiles anything. Only its verbose output names the compile tasks.
+/// What a compile of a source writes: its dependency and diagnostics files, even when the object
+/// comes out byte-identical and is left alone (measured on Swift 6.4); a build with nothing to do
+/// writes none of them.
+const COMPILE_OUTPUTS: [&str; 4] = ["o", "d", "dia", "swiftdeps"];
+
+/// Whether `swift build` compiles anything: a compile output it writes or rewrites. Not the
+/// build's output — which lines name a compile differs between Swift releases, and on the CI
+/// images no line of `swift build -v` said "Compil" even for an edited source.
 fn compiles(package: &Path) -> bool {
-    let build = swift(package, &["build", "-v"]);
-    let said = String::from_utf8_lossy(&build.stdout) + String::from_utf8_lossy(&build.stderr);
-    assert!(build.status.success(), "{said}");
-    said.contains("Compil")
+    let outputs = || -> Vec<(PathBuf, std::time::SystemTime)> {
+        walkdir::WalkDir::new(package.join(".build"))
+            .sort_by_file_name()
+            .into_iter()
+            .map(Result::unwrap)
+            .filter(|entry| {
+                let ext = entry.path().extension().and_then(|ext| ext.to_str());
+                ext.is_some_and(|ext| COMPILE_OUTPUTS.contains(&ext))
+            })
+            .map(|entry| {
+                let mtime = entry.metadata().unwrap().modified().unwrap();
+                (entry.into_path(), mtime)
+            })
+            .collect()
+    };
+    let before = outputs();
+    assert!(
+        !before.is_empty(),
+        "no compile outputs under .build to compare"
+    );
+    let build = swift(package, &["build"]);
+    assert!(build.status.success(), "{build:?}");
+    outputs() != before
 }

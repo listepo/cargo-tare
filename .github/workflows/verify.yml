@@ -1,0 +1,54 @@
+# T43. The one definition of the gate: `ci.yml` runs it on every pull request, and the two
+# workflows that dispatch `release.yml` (`bump.yml`, `release-plz.yml`) run it once more on the
+# commit a release is cut from. A release is the one build nobody can re-run for themselves: a
+# broken binary on the releases page is installed before anyone notices, and `dunnage-update`
+# hands it to everyone already running an older copy.
+#
+# It cannot live inside `release.yml`: dist creates the tag and a draft Release in its `plan` job
+# and lets `host` proceed when `build-local-artifacts` is `skipped` — which is what a failed dist
+# custom job produces — so a gate in there would publish an empty Release rather than stop one.
+# Here a red gate means no dispatch, no tag, and nothing on the releases page.
+name: verify
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      # Rust, just and git-cliff pinned in mise.toml — same toolchain as local.
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Skip the slow cache upload on pull requests; restore still works from main keys.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: just check
+
+  # The Windows archive is built for real only in release.yml, and the suite runs on Windows
+  # only in a local VM (T24) — so the Windows backend at least has to type-check here, before a
+  # release tries to build it.
+  cross:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Into the toolchain rust-toolchain.toml pins, not the default one (see the Justfile).
+      - run: |
+          rustup target add --toolchain "$(rustc --version --verbose | sed -n 's/^release: //p')" \
+            x86_64-pc-windows-msvc
+      - run: just check-cross

@@ -12,7 +12,7 @@ official announcement — re-check the cargo changelog before moving an item int
 | R4 | Re-tune for `embed-metadata=no` | stabilization of `-Zembed-metadata=no` — nightly default since 2026-08, *estimate* not before 1.101 | 0.3 |
 | R5 | Retire passes that cargo takes over | cargo target / build-dir GC (rust-lang/cargo#5026) and per-user artifact cache (#5931) — no version announced | when they land |
 | R6 | Raise dedupe yield with path trimming | `trim-paths` profile option on stable — nightly only (`-Ztrim-paths`), no version announced | after it lands |
-| R7 | Publish 0.1: crates.io and a homebrew tap | none — waits for the creator's go-ahead and a license | 0.1 |
+| R7 | Publish on crates.io and in the homebrew tap | none — waits for the creator's go-ahead and a license | 0.1 |
 | R8 | Embed the library in a build system | none — waits for the creator's go-ahead and a build system that wants it | after T36 |
 
 ### R1. Unit-level `prune`
@@ -55,9 +55,12 @@ measured machine) because some rlibs / rmeta embed absolute paths such as `OUT_D
 `advise` recommend it if it does. First step when picked up: confirm the cause by diffing two
 differing rlibs.
 
-### R7. Publish 0.1: crates.io and a homebrew tap
+### R7. Publish on crates.io and in the homebrew tap
 
 Was T27; the creator's answer was "not yet", so it waits here instead of sitting in the plan.
+GitHub releases with binaries, the shell installer and a formula asset split off into T43; what
+stays here is crates.io and a `sync-dunnage.yml` in `listepo/homebrew-tap` that opens a pull
+request with the `dunnage.rb` asset, as `sync-rtok.yml` does.
 
 `docs/usage.md` opens with "not on crates.io yet, clone and build". Before it can be:
 `Cargo.toml` has no `license` and the repository no `LICENSE` file — the creator picks one;

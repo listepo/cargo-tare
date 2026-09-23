@@ -5,7 +5,19 @@ does is in `DESIGN.md`; the numbers behind the defaults are in `docs/bench.md`.
 
 ## Install
 
-The crate is not on crates.io yet. Build it from a checkout, with the toolchain the repository
+Every release on the [releases page](https://github.com/listepo/dunnage/releases) carries
+binaries for Apple Silicon macOS (signed), x86_64 Linux and x86_64 Windows. The shell installer
+puts `dunnage` and its updater `dunnage-update` into cargo's bin directory:
+
+```
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/listepo/dunnage/releases/latest/download/dunnage-installer.sh | sh
+```
+
+`dunnage-update` later fetches the newest release in place. With
+[ketch](https://github.com/listepo/ketch), `ketch install listepo/dunnage` does the same. How a release is cut is in
+`docs/release.md`.
+
+The crate is not on crates.io yet. Or build it from a checkout, with the toolchain the repository
 pins (`rust-toolchain.toml`):
 
 ```

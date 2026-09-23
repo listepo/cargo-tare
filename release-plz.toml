@@ -1,0 +1,22 @@
+# T43. release-plz keeps one "release: vX.Y.Z" pull request open on main; merging it starts the
+# same release as the Bump workflow. dist still builds, tags and publishes.
+[workspace]
+# The groups of `just changelog`, so the PR's CHANGELOG.md matches the one release.sh writes.
+changelog_config = "cliff.toml"
+# Not on crates.io (R7) — a release is a git tag plus dist archives.
+publish = false
+# With no registry copy to compare against, release-plz would read the package as never
+# released and propose the version already in Cargo.toml every time — rtok met exactly that
+# (its docs/release.md). ketch's answer: read the `v*` tags instead.
+git_only = true
+# The tag dist creates; release-plz reads it to know which version is out.
+git_tag_name = "v{{ version }}"
+# dist creates both the tag and the GitHub Release from release.yml (dispatch-releases);
+# release-plz creating either would race it.
+git_tag_enable = false
+git_release_enable = false
+# A binary with no registry baseline: cargo-semver-checks has nothing to compare.
+semver_check = false
+# The PR title is what release-plz.yml looks for in the merge commit.
+pr_name = "release: v{{ version }}"
+pr_labels = ["release"]

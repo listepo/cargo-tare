@@ -1,0 +1,61 @@
+# Injected into cargo-dist's build-local-artifacts job (see dist-workspace.toml
+# github-build-setup). Kept one level above .github/workflows so GitHub does not
+# treat it as a standalone workflow.
+#
+# Restore Cargo registry/git/target between releases. Upload always — release
+# runners are few, and a warm cache cuts `dist build` on each target. Keyed per
+# runner OS + job name so macOS and Linux do not collide.
+#
+# dist signs with CODESIGN_IDENTITY + CODESIGN_CERTIFICATE(+_PASSWORD). This
+# repo stores the cert as MACOS_CERTIFICATE / MACOS_CERTIFICATE_PWD (same as
+# ketch and rtok); `just dist-generate` maps those names into release.yml. The
+# identity is not a secret here — the cert is imported into a throwaway keychain
+# and the Developer ID Application identity is read out of it.
+
+- name: Cache Cargo build
+  uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+  with:
+    shared-key: release-dist
+    # Release builds are rare; always save so the next cut is warm.
+    cache-on-failure: true
+
+- name: Discover macOS codesign identity
+  if: runner.os == 'macOS'
+  env:
+    MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+    MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+  run: |
+    set -euo pipefail
+    if [ -z "${MACOS_CERTIFICATE:-}" ] || [ -z "${MACOS_CERTIFICATE_PWD:-}" ]; then
+      echo "MACOS_CERTIFICATE and MACOS_CERTIFICATE_PWD must both be set:" >&2
+      echo "a base64-encoded Developer ID Application .p12 and its password." >&2
+      echo "Signing is on (macos-sign = true); an unsigned macOS release is refused." >&2
+      exit 1
+    fi
+
+    keychain="$RUNNER_TEMP/dunnage-codesign-discover.keychain-db"
+    keychain_pwd="$(openssl rand -hex 16)"
+    cert="$RUNNER_TEMP/dunnage-certificate.p12"
+    echo "$MACOS_CERTIFICATE" | base64 --decode > "$cert"
+
+    security create-keychain -p "$keychain_pwd" "$keychain"
+    security set-keychain-settings -lut 21600 "$keychain"
+    security unlock-keychain -p "$keychain_pwd" "$keychain"
+    security import "$cert" -P "$MACOS_CERTIFICATE_PWD" \
+      -f pkcs12 -k "$keychain" -T /usr/bin/codesign
+    rm -f "$cert"
+    security set-key-partition-list -S apple-tool:,apple:,codesign: \
+      -s -k "$keychain_pwd" "$keychain" >/dev/null
+
+    identity="$(security find-identity -v -p codesigning "$keychain" \
+      | sed -nE 's/^ *[0-9]+\) ([0-9A-F]{40}) "Developer ID Application:.*/\1/p')"
+    if [ "$(printf '%s\n' "$identity" | grep -c .)" -ne 1 ]; then
+      echo "expected exactly one Developer ID Application identity, found:" >&2
+      security find-identity -v -p codesigning "$keychain" >&2
+      security delete-keychain "$keychain" || true
+      exit 1
+    fi
+
+    echo "CODESIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+    security delete-keychain "$keychain"
+    echo "CODESIGN_IDENTITY discovered (Developer ID Application hash exported for dist)"

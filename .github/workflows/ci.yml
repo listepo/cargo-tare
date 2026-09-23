@@ -1,0 +1,26 @@
+# T43. The gate on every pull request, and on main after a merge. The jobs themselves live in
+# verify.yml, which the release workflows run too: a release gate narrower than the one every
+# pull request passed would let through what that one caught.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+# A newer commit on the same ref cancels the previous run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    # Draft pull requests still emit `synchronize`; skip until ready_for_review.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    uses: ./.github/workflows/verify.yml

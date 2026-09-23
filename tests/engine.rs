@@ -4,6 +4,7 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
@@ -436,6 +437,10 @@ impl Pass for StopAfterOne<'_> {
 
 #[test]
 fn a_stop_raised_mid_run_leaves_every_file_old_or_new() {
+    // The stop is raised by the first replace; without clones nothing is replaced.
+    if !common::filesystem_can(|caps| caps.clone, "share blocks") {
+        return;
+    }
     let (_tmp, dir) = profile();
     let second = dir.join("deps/second");
     fs::write(&second, CONTENT).unwrap();

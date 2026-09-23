@@ -1,3 +1,8 @@
 # Mirrors rust-toolchain.toml for mise users; keep the two in sync.
 [tools]
 rust = { version = "1.98", components = "rustfmt,clippy" }
+# Release tooling (T43), same pins as rtok. CI installs these through mise-action; cargo-dist
+# is not pinned here (CI would build it from source on every run) — `cargo-dist-version` in
+# dist-workspace.toml pins it, and scripts/dist-generate.sh runs that version through mise.
+just = "1.58.0"
+git-cliff = "2.13.1" # CHANGELOG.md: `just changelog`, scripts/release.sh, release-plz
