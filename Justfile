@@ -15,12 +15,13 @@ check-cross:
     cargo check --target x86_64-unknown-linux-gnu
     cargo check --target x86_64-pc-windows-msvc
 
-# Lossless cleanup of this checkout's cargo target dirs (compress + dedupe); never deletes.
+# Lossless cleanup of this checkout's cargo target dir (compress + dedupe); never deletes.
 # Uses the installed binary, not `cargo run`: a broken working tree must not wreck its own target.
 dunnage:
     #!/usr/bin/env sh
     command -v dunnage >/dev/null || { echo "dunnage not found; install it with: ketch install dunnage"; exit 0; }
-    dunnage run . || test $? -eq 2
+    [ -d target ] || exit 0
+    dunnage run target || test $? -eq 2
 
 # Benchmarks on a COPY of a real workspace; see docs/bench.md.
 bench workspace:
