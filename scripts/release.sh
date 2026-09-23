@@ -58,15 +58,22 @@ if [ "$mode" = "--dry-run" ]; then
   exit 0
 fi
 
-if [ "$version" != "$current" ]; then
-  # -i.bak keeps this working on BSD sed (macOS) as well as GNU.
-  sed -i.bak "s|^version = \".*\"|version = \"$version\"|" Cargo.toml && rm -f Cargo.toml.bak
-  # Cargo.lock carries the package's own version too; -w touches workspace members only.
-  $CARGO update --workspace --quiet
-  # Run before the commit, so the release commit itself is never in the notes it generates.
+# Under --no-bump the release PR has already written the version and the changelog.
+if [ "$mode" != "--no-bump" ]; then
+  if [ "$version" != "$current" ]; then
+    # -i.bak keeps this working on BSD sed (macOS) as well as GNU.
+    sed -i.bak "s|^version = \".*\"|version = \"$version\"|" Cargo.toml && rm -f Cargo.toml.bak
+    # Cargo.lock carries the package's own version too; -w touches workspace members only.
+    $CARGO update --workspace --quiet
+  fi
+  # Also when the version stays: the first release dates its changelog section today, not on
+  # the day CHANGELOG.md was last regenerated. Run before the commit, so the release commit
+  # itself is never in the notes it generates.
   $CLIFF --tag "v$version" -o CHANGELOG.md
   git add Cargo.toml Cargo.lock CHANGELOG.md
-  git commit -m "release: v$version"
+  if ! git diff --cached --quiet; then
+    git commit -m "release: v$version"
+  fi
 fi
 
 if [ "$mode" = "--local" ]; then
