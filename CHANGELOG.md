@@ -13,7 +13,7 @@ Unreleased work is listed first; a `v*` tag starts a version section.
 - T20: Linux reflink dedupe and btrfs compression (`bb3a004`)
 - T22: share by hardlink where the filesystem cannot clone (`779264b`)
 - T38.1: owner for a target dir moved out of its checkout (#2) (`4d18e37`)
-- T43: release pipeline with cargo-dist, release-plz and a bump workflow (`36c11b0`)
+- T43: release pipeline with cargo-dist, release-plz and a bump workflow (#3) (`dde5759`)
 
 ### Other
 - Initial import: cargo-tare through T9.1 (`5aa45f5`)
