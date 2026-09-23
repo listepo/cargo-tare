@@ -543,3 +543,12 @@ out-of-tree target goes with `--lossy orphans` ("the checkout is gone") while th
 checkout's target and the vendored dependency stay; a workspace moved elsewhere inside the live
 checkout is *project gone*, not orphaned. All three fail without the change. Unit tests cover the
 dep-info parsing, the single-crate case with a path dependency, and a check-only target.
+
+### T45. Clean up target dirs with dunnage after tests
+
+Wired the installed `dunnage` binary into the local test loop instead of leaving cleanup manual.
+`just check` (the local/CI test recipe) now runs `dunnage` as a post-dependency: `dunnage run target`
+compresses and dedupes the checkout's `target/` losslessly (never deletes, keeps mtimes) after
+tests pass. The recipe is tolerant of machines without the tool (`command -v dunnage` guard, a
+no-op exit 0), skips a checkout with no `target/` yet, and treats dunnage's exit code 2 (a build held the lock) as success, not a failure.
+`dunnage` is installed with `ketch install dunnage`; `toolchain.md` and `AGENTS.md` note it.

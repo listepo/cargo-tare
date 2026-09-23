@@ -30,7 +30,8 @@ the contract. Measurements that justify the design are in `docs/research.md`.
 
 - `just check` — `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
   `cargo check --lib --no-default-features` (the library without the CLI), `cargo test`.
-  Run it before calling a task done.
+  Run it before calling a task done. Ends with a lossless `dunnage` cleanup of `target/`
+  (`just dunnage`); a no-op when `dunnage` is not installed.
 - `cargo run -- <args>` — the binary is `dunnage`. `cargo dunnage <args>` works through a
   `cargo-dunnage` link to it: cargo passes `dunnage` as the first argument and `main` drops it.
 
