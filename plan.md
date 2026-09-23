@@ -56,6 +56,12 @@ Plan:
 Verify: `dist plan` lists the three archives, the installer and the formula; `scripts/release.sh
 patch --dry-run` prints `v0.1.0`; `ci.yml` is green on the pull request.
 
+The first CI run of the repository found test faults the local machine hides; the creator chose
+to fix them here, until `ci.yml` is green: an import only macOS uses (Linux clippy), the fixture
+inheriting `CARGO_INCREMENTAL=0` from rust-cache, two clone-only tests with no clone guard
+(ext4), and the SwiftPM oracle reading "Compil" in `swift build -v`, which the CI images' Swift
+never prints — it now watches the compile outputs under `.build` instead.
+
 ### T24. A place where the Windows tests run
 
 T21's first open point, made a task because everything else in T21 waits for it: `check-cross`

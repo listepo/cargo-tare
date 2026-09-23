@@ -172,6 +172,10 @@ fn a_stop_leaves_the_groups_not_yet_started_alone() {
 
 #[test]
 fn a_group_out_of_lock_budget_lets_go_and_is_visited_once_more() {
+    // The action to stop in front of is a dedupe, which needs clones.
+    if !common::filesystem_can(|caps| caps.clone, "share blocks") {
+        return;
+    }
     let tmp = TempDir::new().unwrap();
     let root = tmp.path().canonicalize().unwrap();
     // Equal artifacts in one group, so there is always an action to stop in front of.
