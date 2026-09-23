@@ -10,6 +10,7 @@ Design in `DESIGN.md`, measurements in `docs/research.md`.
 
 | # | Status | Priority | Complexity | Readiness | Agent |
 | --- | --- | --- | --- | --- | --- |
+| T43 | in progress | P1 | 3 | 70% | Claude Code / opus-5.5 |
 | T24 | todo | P1 | 3 | 0% | |
 | T21 | todo | P2 | 5 | 0% | |
 | T30.1 | todo | P2 | 3 | 0% | |
@@ -26,6 +27,34 @@ Where the tasks came from: `ideas.md` read against `docs/usage.md` (what a user 
 today), `docs/ecosystems.md` (which build systems the engine fits — a desk study, so each
 ecosystem task starts with a spike, and a spike that says "not worth it" closes the task with
 that finding in `docs/research.md`) and `docs/architecture.md` (the monorepo tasks T37–T40).
+
+### T43. Release pipeline: GitHub releases with binaries
+
+Decided by the creator: release dunnage the way `rtok` does. Split out of R7, which keeps
+crates.io and the tap's own sync workflow. Done: merging a `release: vX.Y.Z` pull request, or
+running Actions → **Bump and release**, gates on the CI checks, tags `vX.Y.Z` and publishes a
+GitHub Release with signed macOS, Linux and Windows archives, a shell installer, a self-updater
+and a Homebrew formula asset — and `docs/release.md` says how.
+
+Creator's answers: cargo-dist, not ketch's hand-written workflow; macOS signing on, from
+`MACOS_CERTIFICATE` / `MACOS_CERTIFICATE_PWD` (the creator sets them, with `RELEASE_PLZ_TOKEN`);
+Homebrew as a release asset only — nothing touches `listepo/homebrew-tap` here.
+
+Plan:
+
+1. `dist-workspace.toml` (dist 0.32.0, three targets, shell + homebrew installers, updater,
+   `dispatch-releases`, `macos-sign`), `[profile.dist]` and `repository` in `Cargo.toml`.
+2. `.github/build-setup.yml`: cargo cache and the codesign identity discovered from the cert.
+3. `scripts/dist-generate.sh` generates `release.yml` and maps `CODESIGN_*` to `MACOS_*`.
+4. `scripts/release.sh`, `bump.yml`, `release-plz.yml` + `release-plz.toml` (`git_only`, so the
+   pull request raises the version from the tags), `cliff.toml`, `CHANGELOG.md`.
+5. `ci.yml` (pull requests) and `verify.yml` (the same gate before a release): `just check` on
+   Linux and macOS, `just check-cross` for Windows.
+6. `mise.toml` pins just, git-cliff, cargo-dist; `Justfile` recipes; `toolchain.md`;
+   `docs/release.md`; the install section of `docs/usage.md`.
+
+Verify: `dist plan` lists the three archives, the installer and the formula; `scripts/release.sh
+patch --dry-run` prints `v0.1.0`; `ci.yml` is green on the pull request.
 
 ### T24. A place where the Windows tests run
 
