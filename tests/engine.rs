@@ -437,6 +437,10 @@ impl Pass for StopAfterOne<'_> {
 
 #[test]
 fn a_stop_raised_mid_run_leaves_every_file_old_or_new() {
+    // The stop is raised by the first replace; without clones nothing is replaced.
+    if !common::filesystem_can(|caps| caps.clone, "share blocks") {
+        return;
+    }
     let (_tmp, dir) = profile();
     let second = dir.join("deps/second");
     fs::write(&second, CONTENT).unwrap();

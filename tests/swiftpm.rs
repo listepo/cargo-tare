@@ -267,13 +267,12 @@ fn after_compress_and_dedupe_swift_builds_nothing_and_the_binary_runs() {
     let ran = swift(&package, &["run", "--skip-build", "app"]);
     assert!(ran.status.success(), "{ran:?}");
     assert!(String::from_utf8_lossy(&ran.stdout).contains("Hello, world!"));
-    // And the oracle can say no: a new mtime on a source is enough for a compile.
-    File::options()
-        .write(true)
-        .open(package.join("Sources/app/Words.swift"))
-        .unwrap()
-        .set_modified(std::time::SystemTime::now())
-        .unwrap();
+    // And the oracle can say no: an edited source is compiled. An edit, not a new mtime: the
+    // Swift of the macOS 26 CI image rebuilt nothing for a touched but unchanged file.
+    let words = package.join("Sources/app/Words.swift");
+    let mut source = fs::read_to_string(&words).unwrap();
+    source.push_str("\n// edited\n");
+    fs::write(&words, source).unwrap();
     assert!(compiles(&package));
 }
 

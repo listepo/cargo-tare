@@ -3,7 +3,7 @@ check:
     cargo fmt --check
     cargo clippy --all-targets -- -D warnings
     cargo check --lib --no-default-features
-    cargo test
+    cargo test --no-fail-fast
 
 # The other two platforms compile. Only `src/sys/` differs between them, and only a build says
 # so; the tests still run where the machine is. Needs the std of both targets, in the toolchain
