@@ -106,3 +106,10 @@ dist builds `dunnage.rb` as a release asset (`installers` includes `homebrew`, `
 there is no `HOMEBREW_TAP_TOKEN` here. Pulling the formula into
 [`listepo/homebrew-tap`](https://github.com/listepo/homebrew-tap) the way its `sync-rtok.yml`
 does for rtok is R7 in `roadmap.md`, with crates.io.
+
+## ketch
+
+[`ketch.toml`](../ketch.toml) is dunnage's ketch manifest, as rtok has one: it names the dist
+archive for each host outright and excludes the updater and the source tarball, so `ketch
+install listepo/dunnage` cannot pick either. `ketch registry push` sends it to the registry;
+`ketch registry validate` on a directory holding `dunnage/ketch.toml` checks it first.
