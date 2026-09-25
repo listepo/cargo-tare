@@ -328,3 +328,11 @@ again until it is built once more. It never keeps a build waiting for longer tha
 budget (2 s), lossy passes run only if the config enables them, and `dunnage daemon status`
 says what it did last and what is due when. `--print` shows the unit without installing it;
 `dunnage daemon remove` stops and removes it. Windows has no service yet.
+
+## License
+
+You can use this project under **any** of the following licenses, at your choice:
+
+1. [GNU GPLv3](LICENSE): free for open source applications on any platform, including embedded systems.
+2. [Royalty-free License](LICENSE-ROYALTY-FREE.md): free for proprietary desktop, mobile, and web applications, as long as you disclose that your application uses this project. Embedded systems are not covered.
+3. [Commercial license](PRICING.md): for proprietary applications, including embedded systems, without the attribution requirement.
