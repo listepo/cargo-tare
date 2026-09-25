@@ -4,16 +4,14 @@
 name: ci
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review]
+  # Push to main, non-draft pull requests and the weekly schedule run this through
+  # pipeline.yml (`workflow_call`), in parallel with the other checks and behind its `gate` job.
+  workflow_call:
   workflow_dispatch:
 
 # A newer commit on the same ref cancels the previous run.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
